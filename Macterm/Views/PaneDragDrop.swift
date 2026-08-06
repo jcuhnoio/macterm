@@ -281,76 +281,72 @@ private struct PaneDragSource: NSViewRepresentable {
 
 // MARK: - Workspace drop target (#227)
 
-/// Everything the per-leaf pane drop targets need to resolve against the
-/// WHOLE workspace: the rendered tree, the shared resolution/preview binding
-/// owned by the workspace view, the pane currently being dragged, and the
-/// move to perform on release. Leaves only capture events; placement always
-/// goes through `TabDropPlacer` in workspace space.
+/// Everything a leaf's drop target needs to resolve against the WHOLE
+/// workspace: the rendered tree, the shared resolution/preview binding owned
+/// by the workspace view, the pane currently being dragged, and the actions
+/// to perform on release. Leaves only capture events; placement always goes
+/// through `TabDropPlacer` in workspace space.
 struct PaneDropContext {
     let root: SplitNode
     let resolution: Binding<TabDropResolution?>
     let draggedPaneID: UUID?
     let onMovePane: @MainActor (UUID, TabDropResolution.Target) -> Void
-}
-
-/// The workspace-level preview host, and the drop target for sidebar TAB
-/// payloads. Tab drags start outside the workspace, so a single whole-area
-/// target hears their dragging-entered; pane drags start INSIDE it (the grab
-/// handle lives in a pane), and AppKit only delivers entered on a transition
-/// INTO a destination — so pane payloads are captured per leaf instead (see
-/// `LeafPaneDropDelegate`) and report into the same shared `resolution`.
-/// Either way the highlight drawn here shows exactly the region the drop
-/// would occupy.
-struct WorkspaceDropTarget: View {
-    let node: SplitNode
-    @Binding var resolution: TabDropResolution?
     /// nil (the quick terminal) refuses sidebar-tab payloads entirely.
     var onMergeTab: (@MainActor (MovableTab, TabDropResolution.Target) -> Void)?
 
-    var body: some View {
-        GeometryReader { geo in
-            Group {
-                if let onMergeTab {
-                    Color.clear.onDrop(of: [.mactermTab], delegate: WorkspaceTabDropDelegate(
-                        resolution: $resolution,
-                        node: node,
-                        viewSize: geo.size,
-                        onMergeTab: onMergeTab
-                    ))
-                } else {
-                    Color.clear
-                }
-            }
-            .overlay(alignment: .topLeading) {
-                if let resolution {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(MactermTheme.accent.opacity(0.3))
-                        .frame(
-                            width: resolution.preview.width * geo.size.width,
-                            height: resolution.preview.height * geo.size.height
-                        )
-                        .offset(
-                            x: resolution.preview.minX * geo.size.width,
-                            y: resolution.preview.minY * geo.size.height
-                        )
-                        .allowsHitTesting(false)
-                }
-            }
-            .animation(.easeInOut(duration: 0.12), value: resolution?.preview)
-        }
+    /// The payload types the leaf targets register for.
+    var acceptedTypes: [UTType] {
+        onMergeTab == nil ? [.mactermPaneID] : [.mactermPaneID, .mactermTab]
     }
 }
 
-/// Resolves a sidebar tab's hover through `TabDropPlacer` on every update so
-/// the preview tracks the cursor across bands, and merges on release.
-struct WorkspaceTabDropDelegate: DropDelegate {
-    @Binding var resolution: TabDropResolution?
-    let node: SplitNode
+/// Renders the shared drop preview over the whole workspace. Deliberately NOT
+/// a drop target: SwiftUI routes a drag to the topmost target by geometry and
+/// does not fall through on a type mismatch, so any full-area target layered
+/// above the leaves would swallow every session the leaves should get. The
+/// leaves (which tile the workspace exactly) own all drop handling — see
+/// `LeafDropDelegate` — and report into `resolution`; this view only draws
+/// the region the drop would occupy.
+struct WorkspaceDropPreview: View {
+    let resolution: TabDropResolution?
+
+    var body: some View {
+        GeometryReader { geo in
+            if let resolution {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(MactermTheme.accent.opacity(0.3))
+                    .frame(
+                        width: resolution.preview.width * geo.size.width,
+                        height: resolution.preview.height * geo.size.height
+                    )
+                    .offset(
+                        x: resolution.preview.minX * geo.size.width,
+                        y: resolution.preview.minY * geo.size.height
+                    )
+            }
+        }
+        .allowsHitTesting(false)
+        .animation(.easeInOut(duration: 0.12), value: resolution?.preview)
+    }
+}
+
+/// Per-leaf drop capture for BOTH drags — a pane's grab handle and a sidebar
+/// tab. Per leaf, not one whole-workspace target, for two reasons: AppKit
+/// only fires dragging-entered on a transition INTO a destination, so a
+/// whole-area target never hears about a pane drag that started inside it;
+/// and SwiftUI's topmost-wins routing means a full-area target would shadow
+/// everything beneath. Each leaf converts its local location into workspace
+/// space via the pane's frame in the tree and resolves through the same
+/// `TabDropPlacer` into the shared resolution, so the placement bands and
+/// preview are identical for every drag. The dragged pane's own leaf carries
+/// no target (a self-drop is meaningless and an invalid drop animates back).
+struct LeafDropDelegate: DropDelegate {
+    let context: PaneDropContext
+    let paneID: UUID
     let viewSize: CGSize
-    let onMergeTab: @MainActor (MovableTab, TabDropResolution.Target) -> Void
 
     func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [.mactermTab])
+        info.hasItemsConforming(to: context.acceptedTypes)
     }
 
     func dropEntered(info: DropInfo) {
@@ -360,74 +356,6 @@ struct WorkspaceTabDropDelegate: DropDelegate {
     func dropUpdated(info: DropInfo) -> DropProposal? {
         // dropUpdated can fire after performDrop; without this guard it would
         // re-show the preview on a completed drop and leave it stuck.
-        guard resolution != nil else { return DropProposal(operation: .forbidden) }
-        update(info)
-        return DropProposal(operation: resolution == nil ? .cancel : .move)
-    }
-
-    func dropExited(info _: DropInfo) {
-        resolution = nil
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        update(info)
-        guard let target = resolution?.target else {
-            resolution = nil
-            return false
-        }
-        resolution = nil
-
-        if let movable = MovableTab.fromDragPasteboard() {
-            MainActor.assumeIsolated { onMergeTab(movable, target) }
-            return true
-        }
-        // Fallback when the Transferable payload wasn't rendered onto the
-        // pasteboard yet: the item provider's async loader. Locally-named
-        // copy (not a `let x = x` shadow) so the @Sendable closure doesn't
-        // capture non-Sendable self.
-        guard let provider = info.itemProviders(for: [.mactermTab]).first else { return false }
-        let merge = onMergeTab
-        provider.loadDataRepresentation(forTypeIdentifier: UTType.mactermTab.identifier) { data, _ in
-            guard let data, let movable = try? JSONDecoder().decode(MovableTab.self, from: data) else { return }
-            Task { @MainActor in
-                merge(movable, target)
-            }
-        }
-        return true
-    }
-
-    private func update(_ info: DropInfo) {
-        guard viewSize.width > 0, viewSize.height > 0 else {
-            resolution = nil
-            return
-        }
-        let point = CGPoint(x: info.location.x / viewSize.width, y: info.location.y / viewSize.height)
-        resolution = MainActor.assumeIsolated { TabDropPlacer.resolve(point: point, in: node) }
-    }
-}
-
-/// Per-leaf capture for a dragged PANE. Each leaf the cursor enters fires its
-/// own dragging-entered (unlike one whole-workspace target, which never hears
-/// about a drag that started inside it), converts the local location into
-/// workspace space via the pane's frame in the tree, and resolves through the
-/// same `TabDropPlacer` into the shared resolution — so the placement logic,
-/// bands, and preview are byte-for-byte the ones a sidebar tab drop uses.
-/// The dragged pane's own leaf carries no target (a self-drop is meaningless
-/// and an invalid drop animates back to its origin).
-struct LeafPaneDropDelegate: DropDelegate {
-    let context: PaneDropContext
-    let paneID: UUID
-    let viewSize: CGSize
-
-    func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [.mactermPaneID])
-    }
-
-    func dropEntered(info: DropInfo) {
-        update(info)
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
         guard context.resolution.wrappedValue != nil else { return DropProposal(operation: .forbidden) }
         update(info)
         return DropProposal(operation: context.resolution.wrappedValue == nil ? .cancel : .move)
@@ -445,16 +373,36 @@ struct LeafPaneDropDelegate: DropDelegate {
         }
         context.resolution.wrappedValue = nil
 
-        // The pane payload is an eagerly-written UUID, readable synchronously
-        // off the drag pasteboard (this drag never leaves the app).
-        guard let data = NSPasteboard(name: .drag).pasteboardItems?
+        // A pane drag first: its payload is an eagerly-written UUID, readable
+        // synchronously off the drag pasteboard (this drag never leaves the
+        // app — sourceOperationMask is .move only within the application).
+        if let data = NSPasteboard(name: .drag).pasteboardItems?
             .compactMap({ $0.data(forType: .mactermPaneID) })
             .first, data.count == 16
-        else { return false }
-        let sourceID = data.withUnsafeBytes { UUID(uuid: $0.loadUnaligned(as: uuid_t.self)) }
+        {
+            let sourceID = data.withUnsafeBytes { UUID(uuid: $0.loadUnaligned(as: uuid_t.self)) }
+            let move = context.onMovePane
+            MainActor.assumeIsolated { move(sourceID, target) }
+            return true
+        }
 
-        let move = context.onMovePane
-        MainActor.assumeIsolated { move(sourceID, target) }
+        guard let onMergeTab = context.onMergeTab else { return false }
+        if let movable = MovableTab.fromDragPasteboard() {
+            MainActor.assumeIsolated { onMergeTab(movable, target) }
+            return true
+        }
+        // Fallback when the Transferable payload wasn't rendered onto the
+        // pasteboard yet: the item provider's async loader. Locally-named
+        // copy (not a `let x = x` shadow) so the @Sendable closure doesn't
+        // capture non-Sendable self.
+        guard let provider = info.itemProviders(for: [.mactermTab]).first else { return false }
+        let merge = onMergeTab
+        provider.loadDataRepresentation(forTypeIdentifier: UTType.mactermTab.identifier) { data, _ in
+            guard let data, let movable = try? JSONDecoder().decode(MovableTab.self, from: data) else { return }
+            Task { @MainActor in
+                merge(movable, target)
+            }
+        }
         return true
     }
 

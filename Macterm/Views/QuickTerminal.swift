@@ -510,10 +510,10 @@ private struct QuickTerminalView: View {
         .id(renderedNode.id)
         .background(MactermTheme.bgWithOpacity)
         // Grab-handle drags share the workspace drop grammar (whole-edge,
-        // divider, local). No tab handler: the quick terminal's ephemeral
-        // world doesn't adopt workspace tabs.
+        // divider, local). The context carries no tab handler: the quick
+        // terminal's ephemeral world doesn't adopt workspace tabs.
         .overlay {
-            WorkspaceDropTarget(node: renderedNode, resolution: $dropResolution)
+            WorkspaceDropPreview(resolution: dropResolution)
         }
         .onPreferenceChange(DraggingPaneKey.self) { value in
             MainActor.assumeIsolated {

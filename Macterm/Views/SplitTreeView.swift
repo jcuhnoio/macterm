@@ -143,7 +143,7 @@ private struct SplitLeafView: View {
             // inside it. The dragged pane's own leaf carries no target.
             if let paneDrop, paneDrop.draggedPaneID != pane.id {
                 GeometryReader { geo in
-                    Color.clear.onDrop(of: [.mactermPaneID], delegate: LeafPaneDropDelegate(
+                    Color.clear.onDrop(of: paneDrop.acceptedTypes, delegate: LeafDropDelegate(
                         context: paneDrop,
                         paneID: pane.id,
                         viewSize: geo.size
