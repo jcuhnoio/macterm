@@ -15,7 +15,6 @@ struct SplitTreeView: View {
     let onCommandFinished: (UUID) -> Void
     let onToggleZoom: (UUID) -> Void
     let onMovePane: @MainActor (UUID, UUID, PaneDropZone) -> Void
-    let onMergeTab: @MainActor (MovableTab, UUID, PaneDropZone) -> Void
 
     init(
         node: SplitNode,
@@ -29,8 +28,7 @@ struct SplitTreeView: View {
         onClosePane: @escaping (UUID) -> Void,
         onCommandFinished: @escaping (UUID) -> Void = { _ in },
         onToggleZoom: @escaping (UUID) -> Void = { _ in },
-        onMovePane: @escaping @MainActor (UUID, UUID, PaneDropZone) -> Void = { _, _, _ in },
-        onMergeTab: @escaping @MainActor (MovableTab, UUID, PaneDropZone) -> Void = { _, _, _ in }
+        onMovePane: @escaping @MainActor (UUID, UUID, PaneDropZone) -> Void = { _, _, _ in }
     ) {
         self.node = node
         self.focusedPaneID = focusedPaneID
@@ -44,7 +42,6 @@ struct SplitTreeView: View {
         self.onCommandFinished = onCommandFinished
         self.onToggleZoom = onToggleZoom
         self.onMovePane = onMovePane
-        self.onMergeTab = onMergeTab
     }
 
     var body: some View {
@@ -60,8 +57,7 @@ struct SplitTreeView: View {
                 onCommandFinished: { onCommandFinished(pane.id) },
                 onSplitRequest: { dir in onSplit(pane.id, dir) },
                 onZoomRequest: { onToggleZoom(pane.id) },
-                onMovePane: onMovePane,
-                onMergeTab: onMergeTab
+                onMovePane: onMovePane
             )
 
         case let .split(branch):
@@ -78,8 +74,7 @@ struct SplitTreeView: View {
                     onClosePane: onClosePane,
                     onCommandFinished: onCommandFinished,
                     onToggleZoom: onToggleZoom,
-                    onMovePane: onMovePane,
-                    onMergeTab: onMergeTab
+                    onMovePane: onMovePane
                 )
                 .id(branch.first.id)
             } second: {
@@ -95,8 +90,7 @@ struct SplitTreeView: View {
                     onClosePane: onClosePane,
                     onCommandFinished: onCommandFinished,
                     onToggleZoom: onToggleZoom,
-                    onMovePane: onMovePane,
-                    onMergeTab: onMergeTab
+                    onMovePane: onMovePane
                 )
                 .id(branch.second.id)
             }
@@ -118,7 +112,6 @@ private struct SplitLeafView: View {
     let onSplitRequest: (SplitDirection) -> Void
     let onZoomRequest: () -> Void
     let onMovePane: @MainActor (UUID, UUID, PaneDropZone) -> Void
-    let onMergeTab: @MainActor (MovableTab, UUID, PaneDropZone) -> Void
 
     @State private var dropState: PaneDropState = .idle
     @State private var draggingPaneID: UUID?
@@ -152,12 +145,11 @@ private struct SplitLeafView: View {
             .background {
                 if !isSelfDragging {
                     Color.clear
-                        .onDrop(of: [.mactermPaneID, .mactermTab], delegate: PaneDropDelegate(
+                        .onDrop(of: [.mactermPaneID], delegate: PaneDropDelegate(
                             dropState: $dropState,
                             viewSize: geo.size,
                             destinationPaneID: pane.id,
-                            onMove: onMovePane,
-                            onMergeTab: onMergeTab
+                            onMove: onMovePane
                         ))
                 }
             }

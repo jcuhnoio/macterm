@@ -274,18 +274,23 @@ struct WorkspaceView: View {
                     if tab.movePane(source, onto: destination, zone: zone) {
                         appState.saveWorkspaces()
                     }
-                },
-                onMergeTab: { movable, paneID, zone in
-                    appState.mergeTab(
-                        movable.tabID,
-                        from: movable.sourceProjectID,
-                        ontoPane: paneID,
-                        inProject: project.id,
-                        zone: zone
-                    )
                 }
             )
             .id(renderedNode.id)
+            // Sidebar tab drags land here, resolved against the workspace's
+            // whole geometry (#227). Uses `renderedNode`, not `tab.splitRoot`:
+            // while zoomed the user sees one pane, so a drop should read as a
+            // local split of it, not of the hidden layout.
+            .overlay {
+                WorkspaceTabDropTarget(node: renderedNode) { movable, target in
+                    appState.mergeTab(
+                        movable.tabID,
+                        from: movable.sourceProjectID,
+                        at: target,
+                        inProject: project.id
+                    )
+                }
+            }
             .overlay(alignment: .topTrailing) {
                 if tab.zoomedPaneID != nil {
                     ZoomIndicator(onExit: { appState.toggleZoom(projectID: project.id) })

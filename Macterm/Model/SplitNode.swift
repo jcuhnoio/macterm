@@ -1373,8 +1373,9 @@ extension SplitNode {
 
     /// Number of "cells" this subtree contributes when laid out along the given
     /// direction. Same-direction descendants expand to their leaf count;
-    /// different-direction or leaf nodes count as a single cell.
-    private func tileUnits(along direction: SplitDirection) -> Int {
+    /// different-direction or leaf nodes count as a single cell. Also feeds
+    /// `TabDropPlacer`'s preview widths (#227).
+    func tileUnits(along direction: SplitDirection) -> Int {
         switch self {
         case .pane: 1
         case let .split(b):

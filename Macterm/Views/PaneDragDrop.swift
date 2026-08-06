@@ -287,18 +287,17 @@ enum PaneDropState: Equatable {
 }
 
 /// Per-pane drop target. The zone follows the cursor; the actual move is
-/// performed by `onMove(sourcePaneID, destinationPaneID, zone)` for a pane
-/// drag, or `onMergeTab(movableTab, destinationPaneID, zone)` for a sidebar
-/// tab dragged into the workspace (#227).
+/// performed by `onMove(sourcePaneID, destinationPaneID, zone)`. Sidebar tab
+/// drags are NOT handled here — they resolve against workspace-level
+/// geometry, so `WorkspaceTabDropTarget` owns them.
 struct PaneDropDelegate: DropDelegate {
     @Binding var dropState: PaneDropState
     let viewSize: CGSize
     let destinationPaneID: UUID
     let onMove: @MainActor (UUID, UUID, PaneDropZone) -> Void
-    var onMergeTab: @MainActor (MovableTab, UUID, PaneDropZone) -> Void = { _, _, _ in }
 
     func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [.mactermPaneID, .mactermTab])
+        info.hasItemsConforming(to: [.mactermPaneID])
     }
 
     func dropEntered(info: DropInfo) {
@@ -325,36 +324,136 @@ struct PaneDropDelegate: DropDelegate {
         // within the application), so the payload can be read synchronously
         // off the drag pasteboard instead of round-tripping through the
         // NSItemProvider's background-queue loader.
-        if let data = NSPasteboard(name: .drag).pasteboardItems?
+        guard let data = NSPasteboard(name: .drag).pasteboardItems?
             .compactMap({ $0.data(forType: .mactermPaneID) })
             .first, data.count == 16
-        {
-            let sourceID = data.withUnsafeBytes { UUID(uuid: $0.loadUnaligned(as: uuid_t.self)) }
-            guard sourceID != destinationPaneID else { return false }
+        else { return false }
+        let sourceID = data.withUnsafeBytes { UUID(uuid: $0.loadUnaligned(as: uuid_t.self)) }
+        guard sourceID != destinationPaneID else { return false }
 
-            MainActor.assumeIsolated {
-                onMove(sourceID, destinationPaneID, zone)
-            }
+        MainActor.assumeIsolated {
+            onMove(sourceID, destinationPaneID, zone)
+        }
+        return true
+    }
+}
+
+// MARK: - Workspace tab drop (#227)
+
+/// One drop target over the whole split tree for a sidebar tab dragged into
+/// the workspace. Deliberately NOT per leaf: the cursor position picks a
+/// LEVEL in the tree (whole-edge, divider, or local pane split — see
+/// `TabDropPlacer`), which needs workspace-relative geometry no single pane
+/// can see. The highlight shows exactly the region the dropped tab would
+/// occupy, so the outcome is visible before release.
+struct WorkspaceTabDropTarget: View {
+    let node: SplitNode
+    let onMerge: @MainActor (MovableTab, TabDropResolution.Target) -> Void
+
+    @State private var resolution: TabDropResolution?
+
+    var body: some View {
+        GeometryReader { geo in
+            Color.clear
+                .onDrop(of: [.mactermTab], delegate: WorkspaceTabDropDelegate(
+                    resolution: $resolution,
+                    node: node,
+                    viewSize: geo.size,
+                    onMerge: onMerge
+                ))
+                .overlay(alignment: .topLeading) {
+                    if let resolution {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(MactermTheme.accent.opacity(0.3))
+                            .frame(
+                                width: resolution.preview.width * geo.size.width,
+                                height: resolution.preview.height * geo.size.height
+                            )
+                            .offset(
+                                x: resolution.preview.minX * geo.size.width,
+                                y: resolution.preview.minY * geo.size.height
+                            )
+                            .allowsHitTesting(false)
+                    }
+                }
+                .animation(.easeInOut(duration: 0.12), value: resolution?.preview)
+        }
+    }
+}
+
+/// Resolves the hover location through `TabDropPlacer` on every update so the
+/// preview tracks the cursor across bands, and applies the merge on release.
+struct WorkspaceTabDropDelegate: DropDelegate {
+    @Binding var resolution: TabDropResolution?
+    let node: SplitNode
+    let viewSize: CGSize
+    let onMerge: @MainActor (MovableTab, TabDropResolution.Target) -> Void
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.mactermTab])
+    }
+
+    func dropEntered(info: DropInfo) {
+        update(info)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        update(info)
+        return DropProposal(operation: resolution == nil ? .cancel : .move)
+    }
+
+    func dropExited(info _: DropInfo) {
+        resolution = nil
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        update(info)
+        guard let target = resolution?.target else {
+            resolution = nil
+            return false
+        }
+        resolution = nil
+
+        if let movable = MovableTab.fromDragPasteboard() {
+            MainActor.assumeIsolated { onMerge(movable, target) }
             return true
         }
-
-        // A sidebar tab dropped into the workspace (#227). The payload is a
-        // Transferable whose data may be rendered lazily, so it goes through
-        // the item provider's async loader rather than the sync pasteboard
-        // read above.
+        // Fallback when the Transferable payload wasn't rendered onto the
+        // pasteboard yet: the item provider's async loader. Locally-named
+        // copy (not a `let x = x` shadow) so the @Sendable closure doesn't
+        // capture non-Sendable self.
         guard let provider = info.itemProviders(for: [.mactermTab]).first else { return false }
-        // Locally-named copies (not `let x = x` shadows, which hoist over the
-        // whole scope and break the pane-path references above) so the
-        // @Sendable loader closure doesn't capture non-Sendable self.
-        let destination = destinationPaneID
-        let merge = onMergeTab
+        let merge = onMerge
         provider.loadDataRepresentation(forTypeIdentifier: UTType.mactermTab.identifier) { data, _ in
             guard let data, let movable = try? JSONDecoder().decode(MovableTab.self, from: data) else { return }
             Task { @MainActor in
-                merge(movable, destination, zone)
+                merge(movable, target)
             }
         }
         return true
+    }
+
+    private func update(_ info: DropInfo) {
+        guard viewSize.width > 0, viewSize.height > 0 else {
+            resolution = nil
+            return
+        }
+        let point = CGPoint(x: info.location.x / viewSize.width, y: info.location.y / viewSize.height)
+        resolution = MainActor.assumeIsolated { TabDropPlacer.resolve(point: point, in: node) }
+    }
+}
+
+extension MovableTab {
+    /// Decode the dragged tab's payload synchronously off the drag pasteboard.
+    /// This drag never leaves the app, so the data is usually available
+    /// without the item provider's background-queue round trip; returns nil
+    /// when the Transferable hasn't rendered it yet.
+    static func fromDragPasteboard() -> MovableTab? {
+        guard let data = NSPasteboard(name: .drag).pasteboardItems?
+            .compactMap({ $0.data(forType: NSPasteboard.PasteboardType(UTType.mactermTab.identifier)) })
+            .first
+        else { return nil }
+        return try? JSONDecoder().decode(MovableTab.self, from: data)
     }
 }
 

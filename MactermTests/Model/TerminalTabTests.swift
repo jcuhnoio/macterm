@@ -329,6 +329,70 @@ struct TerminalTabTests {
         #expect(tab.splitRoot.allPanes().count == 2)
     }
 
+    // MARK: - mergeTree (#227 workspace drops)
+
+    @Test
+    func mergeTree_rootEdge_bottom_takes_the_full_width_half() throws {
+        let (tab, _) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let (incoming, incomingIDs) = build(pane("x"))
+        #expect(tab.mergeTree(incoming, at: .rootEdge(.bottom)))
+        let xID = try #require(incomingIDs["x"])
+        let frame = try #require(tab.splitRoot.paneFrames()[xID])
+        #expect(abs(frame.width - 1) < 0.001)
+        #expect(abs(frame.height - 0.5) < 0.001)
+        #expect(abs(frame.minY - 0.5) < 0.001)
+        #expect(tab.focusedPaneID == xID)
+    }
+
+    @Test
+    func mergeTree_rootEdge_left_equalizes_to_thirds() throws {
+        let (tab, _) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let (incoming, incomingIDs) = build(pane("x"))
+        #expect(tab.mergeTree(incoming, at: .rootEdge(.left)))
+        let frames = tab.splitRoot.paneFrames()
+        for frame in frames.values {
+            #expect(abs(frame.width - 1.0 / 3.0) < 0.001)
+        }
+        let xID = try #require(incomingIDs["x"])
+        #expect(try abs(#require(frames[xID]).minX) < 0.001)
+    }
+
+    @Test
+    func mergeTree_divider_equalizes_to_thirds() throws {
+        let (tab, ids) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let (incoming, incomingIDs) = build(pane("x"))
+        #expect(try tab.mergeTree(incoming, at: .divider(#require(ids["b"]), .left)))
+        let frames = tab.splitRoot.paneFrames()
+        #expect(frames.count == 3)
+        for frame in frames.values {
+            #expect(abs(frame.width - 1.0 / 3.0) < 0.001)
+        }
+        // The new pane sits in the middle column, where the divider was.
+        let xID = try #require(incomingIDs["x"])
+        #expect(try abs(#require(frames[xID]).minX - 1.0 / 3.0) < 0.001)
+    }
+
+    @Test
+    func mergeTree_pane_target_halves_the_pane() throws {
+        Preferences.shared.autoTilingEnabled = false
+        let (tab, ids) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let (incoming, incomingIDs) = build(pane("x"))
+        #expect(try tab.mergeTree(incoming, at: .pane(#require(ids["a"]), .left)))
+        // 1/4 + 1/4 + 1/2: a local split never disturbs the sibling column.
+        let frames = tab.splitRoot.paneFrames()
+        let xID = try #require(incomingIDs["x"])
+        #expect(try abs(#require(frames[xID]).width - 0.25) < 0.001)
+        #expect(try abs(#require(frames[#require(ids["b"])]).width - 0.5) < 0.001)
+    }
+
+    @Test
+    func mergeTree_unknown_pane_fails_without_reshaping() {
+        let (tab, _) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let (incoming, _) = build(pane("x"))
+        #expect(!tab.mergeTree(incoming, at: .pane(UUID(), .left)))
+        #expect(tab.splitRoot.allPanes().count == 2)
+    }
+
     // MARK: - movePane
 
     @Test

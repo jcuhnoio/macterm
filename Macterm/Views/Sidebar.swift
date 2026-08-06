@@ -560,20 +560,6 @@ private struct TabMergeDropDelegate: DropDelegate {
     }
 }
 
-private extension MovableTab {
-    /// Decode the dragged tab's payload synchronously off the drag pasteboard.
-    /// This drag never leaves the app, so the data is usually available
-    /// without the item provider's background-queue round trip; returns nil
-    /// when the Transferable hasn't rendered it yet.
-    static func fromDragPasteboard() -> MovableTab? {
-        guard let data = NSPasteboard(name: .drag).pasteboardItems?
-            .compactMap({ $0.data(forType: NSPasteboard.PasteboardType(UTType.mactermTab.identifier)) })
-            .first
-        else { return nil }
-        return try? JSONDecoder().decode(MovableTab.self, from: data)
-    }
-}
-
 private struct SidebarProjectRow: View {
     let project: Project
     let index: Int

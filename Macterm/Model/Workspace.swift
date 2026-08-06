@@ -259,6 +259,31 @@ final class TerminalTab: Identifiable {
         if Preferences.shared.autoTilingEnabled { splitRoot.rebalanced() }
     }
 
+    /// Merge another tab's split tree at a resolved workspace drop target
+    /// (#227). Local pane drops keep the halving behavior of a normal split;
+    /// divider and root-edge drops ALWAYS equalize the tree, because their
+    /// meaning is positional parity — three side-by-side panes reading as
+    /// thirds, a whole-edge pane taking its even share.
+    @discardableResult
+    func mergeTree(_ node: SplitNode, at target: TabDropResolution.Target) -> Bool {
+        switch target {
+        case let .pane(paneID, zone):
+            return insertTree(node, at: paneID, zone: zone)
+        case let .divider(paneID, zone):
+            guard insertTree(node, at: paneID, zone: zone) else { return false }
+            splitRoot.rebalanced()
+            return true
+        case let .rootEdge(zone):
+            let first: SplitNode = zone.splitPosition == .first ? node : splitRoot
+            let second: SplitNode = zone.splitPosition == .first ? splitRoot : node
+            splitRoot = .split(SplitBranch(direction: zone.splitDirection, first: first, second: second))
+            zoomedPaneID = nil
+            if let paneID = node.allPanes().first?.id { focusPane(paneID) }
+            splitRoot.rebalanced()
+            return true
+        }
+    }
+
     /// Merge another tab's split tree next to one of this tab's panes (#227 —
     /// dragging a sidebar tab into the workspace): the destination pane is
     /// wrapped in a new split with the adopted tree on the `zone` side.

@@ -957,22 +957,32 @@ final class AppState {
         finishMerge(intoTab: destTabID, inProject: destProjectID)
     }
 
-    /// Merge a tab next to a specific pane (#227 — dragging a sidebar tab into
-    /// the workspace): the destination pane is wrapped in a new split with the
-    /// source tab's tree on the `zone` side. No-op when the pane isn't in any
-    /// tab of the destination project or lives in the source tab itself.
+    /// Merge a tab into the destination project's ACTIVE tab at a resolved
+    /// workspace drop target (#227 — dragging a sidebar tab into the
+    /// workspace, where the cursor picks a level: whole-edge, divider, or
+    /// local pane split). No-op when the active tab IS the dragged tab.
     func mergeTab(
         _ tabID: UUID,
         from sourceProjectID: UUID,
-        ontoPane paneID: UUID,
-        inProject destProjectID: UUID,
-        zone: PaneDropZone
+        at target: TabDropResolution.Target,
+        inProject destProjectID: UUID
     ) {
-        guard let destTab = workspaces[destProjectID]?.tabs.first(where: { $0.splitRoot.contains(paneID: paneID) }),
+        guard let destTab = workspaces[destProjectID]?.activeTab,
               destTab.id != tabID,
               let sourceTab = detachTabForMerge(tabID, from: sourceProjectID, to: destProjectID)
         else { return }
-        destTab.insertTree(sourceTab.splitRoot, at: paneID, zone: zone)
+        guard destTab.mergeTree(sourceTab.splitRoot, at: target) else {
+            // The target pane vanished mid-drag: put the detached tab back
+            // (identity restored) instead of losing its live shells.
+            if sourceProjectID != destProjectID {
+                for pane in sourceTab.splitRoot.allPanes() {
+                    pane.rebind(projectID: sourceProjectID)
+                }
+            }
+            workspaces[sourceProjectID]?.adoptTab(sourceTab)
+            saveWorkspaces()
+            return
+        }
         finishMerge(intoTab: destTab.id, inProject: destProjectID)
     }
 
