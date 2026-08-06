@@ -381,8 +381,9 @@ struct TerminalTabTests {
         // 1/4 + 1/4 + 1/2: a local split never disturbs the sibling column.
         let frames = tab.splitRoot.paneFrames()
         let xID = try #require(incomingIDs["x"])
+        let bID = try #require(ids["b"])
         #expect(try abs(#require(frames[xID]).width - 0.25) < 0.001)
-        #expect(try abs(#require(frames[#require(ids["b"])]).width - 0.5) < 0.001)
+        #expect(try abs(#require(frames[bID]).width - 0.5) < 0.001)
     }
 
     @Test
