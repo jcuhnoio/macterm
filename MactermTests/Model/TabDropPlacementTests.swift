@@ -96,6 +96,42 @@ struct TabDropPlacementTests {
         #expect(r.target == .rootEdge(.top))
     }
 
+    // MARK: - Skinny panes (band cap)
+
+    /// Four equal columns; without the per-pane band cap the fixed 0.15
+    /// workspace bands swallow every pixel of every 0.25-wide pane and no
+    /// top/bottom placement is reachable at all.
+    private func fourColumns() -> (SplitNode, [String: UUID]) {
+        build(H(pane("a"), H(pane("b"), H(pane("c"), pane("d"), ratio: 0.5), ratio: 1.0 / 3.0), ratio: 0.25))
+    }
+
+    @Test
+    func skinny_pane_can_still_take_the_whole_bottom() throws {
+        let (root, _) = fourColumns()
+        let r = try #require(TabDropPlacer.resolve(point: CGPoint(x: 0.125, y: 0.6), in: root))
+        #expect(r.target == .rootEdge(.bottom))
+    }
+
+    @Test
+    func skinny_pane_can_still_split_top_down_locally() throws {
+        let (root, ids) = fourColumns()
+        let r = try #require(TabDropPlacer.resolve(point: CGPoint(x: 0.125, y: 0.9), in: root))
+        #expect(try r.target == .pane(#require(ids["a"]), .bottom))
+    }
+
+    @Test
+    func skinny_pane_keeps_proportional_edge_and_divider_bands() throws {
+        let (root, ids) = fourColumns()
+        // Bands shrink to 0.3 × 0.25 = 0.075 of the workspace.
+        let edge = try #require(TabDropPlacer.resolve(point: CGPoint(x: 0.05, y: 0.5), in: root))
+        #expect(edge.target == .rootEdge(.left))
+        let divider = try #require(TabDropPlacer.resolve(point: CGPoint(x: 0.24, y: 0.5), in: root))
+        #expect(try divider.target == .divider(#require(ids["a"]), .right))
+        // The middle of the pane stays out of both bands.
+        let mid = try #require(TabDropPlacer.resolve(point: CGPoint(x: 0.1, y: 0.5), in: root))
+        #expect(try mid.target == .pane(#require(ids["a"]), .left))
+    }
+
     // MARK: - Structure edge cases
 
     @Test

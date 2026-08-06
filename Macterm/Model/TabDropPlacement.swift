@@ -46,6 +46,14 @@ enum TabDropPlacer {
     /// Within this fraction of the workspace, an edge or divider captures the
     /// drop and escalates it past the hovered pane.
     static let boundaryBand: CGFloat = 0.15
+    /// A band may claim at most this fraction of the HOVERED pane's extent on
+    /// its axis. Without the cap, four side-by-side panes (each 0.25 wide)
+    /// are swallowed whole by the fixed workspace-relative bands — the edge
+    /// band claims x < 0.15 and the divider band claims x > 0.10 — leaving no
+    /// pixel that can express a top/bottom split. Capped, every pane keeps at
+    /// least the middle 40% of itself for the zone-driven placements. At two
+    /// panes the cap equals `boundaryBand`, so wide layouts are unchanged.
+    static let paneBandCap: CGFloat = 0.3
     /// The far end of the perpendicular root band: between the midline and
     /// this coordinate the drop splits the whole workspace; past it the drop
     /// is local to the hovered pane.
@@ -76,21 +84,23 @@ enum TabDropPlacer {
         let rootFraction = 1 / CGFloat(rootUnits + 1)
         let firstZone: PaneDropZone = rootAxis == .horizontal ? .left : .top
         let secondZone: PaneDropZone = rootAxis == .horizontal ? .right : .bottom
-        if alongRoot < boundaryBand {
+        let rootExtent = rootAxis == .horizontal ? frame.width : frame.height
+        let rootBand = min(boundaryBand, rootExtent * paneBandCap)
+        if alongRoot < rootBand {
             return TabDropResolution(target: .rootEdge(firstZone), preview: edgeStrip(zone: firstZone, fraction: rootFraction))
         }
-        if alongRoot > 1 - boundaryBand {
+        if alongRoot > 1 - rootBand {
             return TabDropResolution(target: .rootEdge(secondZone), preview: edgeStrip(zone: secondZone, fraction: rootFraction))
         }
         let leadEdge = rootAxis == .horizontal ? frame.minX : frame.minY
         let trailEdge = rootAxis == .horizontal ? frame.maxX : frame.maxY
-        if leadEdge > 0.0001, abs(alongRoot - leadEdge) < boundaryBand {
+        if leadEdge > 0.0001, abs(alongRoot - leadEdge) < rootBand {
             return TabDropResolution(
                 target: .divider(paneID, firstZone),
                 preview: dividerStrip(at: leadEdge, fraction: rootFraction, crossing: frame, zone: firstZone)
             )
         }
-        if trailEdge < 0.9999, abs(alongRoot - trailEdge) < boundaryBand {
+        if trailEdge < 0.9999, abs(alongRoot - trailEdge) < rootBand {
             return TabDropResolution(
                 target: .divider(paneID, secondZone),
                 preview: dividerStrip(at: trailEdge, fraction: rootFraction, crossing: frame, zone: secondZone)
@@ -118,7 +128,7 @@ enum TabDropPlacer {
                     return TabDropResolution(target: .rootEdge(zone), preview: edgeStrip(zone: zone, fraction: fraction))
                 }
             }
-        } else if abs(cursor - edge) < boundaryBand {
+        } else if abs(cursor - edge) < min(boundaryBand, (axis == .horizontal ? frame.width : frame.height) * paneBandCap) {
             // The pane's edge adjoins a sibling: insert at the divider.
             return TabDropResolution(
                 target: .divider(paneID, zone),
