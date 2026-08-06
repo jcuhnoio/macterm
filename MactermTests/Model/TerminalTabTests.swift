@@ -258,6 +258,30 @@ struct TerminalTabTests {
         #expect(try !tab.paneFocusHistory.items.contains(#require(ids["b"])))
     }
 
+    // MARK: - sidebarRowTitle (#227)
+
+    @Test
+    func sidebarRowTitle_four_or_more_panes_counts_them() {
+        let (tab, _) = makeTab(H(H(pane("a"), pane("b")), H(pane("c"), pane("d"))))
+        #expect(tab.sidebarRowTitle == "4 panes")
+    }
+
+    @Test
+    func sidebarRowTitle_rename_wins_over_pane_count() {
+        let (tab, _) = makeTab(H(H(pane("a"), pane("b")), H(pane("c"), pane("d"))))
+        tab.customTitle = "my workbench"
+        #expect(tab.sidebarRowTitle == "my workbench")
+        // Clearing the rename falls back to the count, not the pipe list.
+        tab.customTitle = nil
+        #expect(tab.sidebarRowTitle == "4 panes")
+    }
+
+    @Test
+    func sidebarRowTitle_below_four_panes_keeps_normal_title() {
+        let (tab, _) = makeTab(H(pane("a"), H(pane("b"), pane("c"))))
+        #expect(tab.sidebarRowTitle == tab.sidebarTitle)
+    }
+
     // MARK: - adoptTree / insertTree (#227)
 
     @Test

@@ -681,20 +681,9 @@ private struct SidebarTabRow: View {
                 .onExitCommand { cancelRename() }
                 .onAppear { focused = true }
         } else {
-            Text(rowTitle)
+            Text(tab.sidebarRowTitle)
                 .lineLimit(1)
         }
-    }
-
-    /// The single-tab row title. A split of four or more panes is too dense
-    /// for per-pane containers, so its row just counts them; anything else
-    /// keeps the normal title (custom name first, then the auto title).
-    private var rowTitle: String {
-        let paneCount = tab.splitRoot.allPanes().count
-        if tab.customTitle == nil, paneCount >= 4 {
-            return "\(paneCount) panes"
-        }
-        return tab.sidebarTitle
     }
 
     /// The tab's live agent logo, unless disabled in Settings.

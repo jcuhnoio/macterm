@@ -43,6 +43,18 @@ final class TerminalTab: Identifiable {
 
     var sidebarTitle: String { customTitle ?? autoTitle }
 
+    /// The sidebar row's single-tab title (#227): a rename always wins, and an
+    /// unrenamed split of four or more panes is too dense to enumerate — its
+    /// row just counts them. Smaller splits render per-pane containers in the
+    /// sidebar, so this only surfaces for the single-tab row shapes.
+    var sidebarRowTitle: String {
+        if customTitle == nil {
+            let paneCount = splitRoot.allPanes().count
+            if paneCount >= 4 { return "\(paneCount) panes" }
+        }
+        return sidebarTitle
+    }
+
     /// The AI-agent logo for this tab's sidebar row: the focused pane's
     /// running agent, else the first pane running one. nil when no pane has
     /// an agent in the foreground (the user's chosen tab icon shows instead).
