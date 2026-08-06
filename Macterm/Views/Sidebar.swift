@@ -432,6 +432,11 @@ private struct MergeableTabRow: View {
 
     var body: some View {
         SidebarTabRow(tab: tab, index: index, onRename: onRename)
+            // Stretch to the full row and make every point hit-testable:
+            // without this, the drag grab area and the merge drop target hug
+            // the label's intrinsic width instead of covering the whole row.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
             .background {
                 // Same shape as SplitLeafView's drop target: `Color.clear` in
                 // a GeometryReader so the delegate knows the row width (the
