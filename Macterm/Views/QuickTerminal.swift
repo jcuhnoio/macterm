@@ -465,6 +465,10 @@ final class QuickTerminalPanel: NSPanel {
 
 private struct QuickTerminalView: View {
     @Bindable var state: QuickTerminalSplitState
+    /// The pane currently dragged by its grab handle (`DraggingPaneKey`), so
+    /// the shared drop target can refuse self-targets.
+    @State
+    private var draggedPaneID: UUID?
 
     var body: some View {
         let renderedNode: SplitNode = {
@@ -489,13 +493,25 @@ private struct QuickTerminalView: View {
                 else { return }
                 pane.acknowledgeCommandCompletion()
             },
-            onToggleZoom: { state.tab.toggleZoom(paneID: $0) },
-            onMovePane: { source, destination, zone in
-                state.tab.movePane(source, onto: destination, zone: zone)
-            }
+            onToggleZoom: { state.tab.toggleZoom(paneID: $0) }
         )
         .id(renderedNode.id)
         .background(MactermTheme.bgWithOpacity)
+        // Grab-handle drags share the workspace drop grammar (whole-edge,
+        // divider, local). No tab handler: the quick terminal's ephemeral
+        // world doesn't adopt workspace tabs.
+        .overlay {
+            WorkspaceDropTarget(
+                node: renderedNode,
+                draggedPaneID: draggedPaneID,
+                onMovePane: { paneID, target in
+                    state.tab.movePane(paneID, to: target)
+                }
+            )
+        }
+        .onPreferenceChange(DraggingPaneKey.self) { value in
+            MainActor.assumeIsolated { draggedPaneID = value }
+        }
         .overlay(alignment: .topTrailing) {
             if let zoomID = state.tab.zoomedPaneID {
                 ZoomIndicator(onExit: { state.tab.toggleZoom(paneID: zoomID) })

@@ -394,6 +394,47 @@ struct TerminalTabTests {
         #expect(tab.splitRoot.allPanes().count == 2)
     }
 
+    // MARK: - movePane(to:) — the grab handle shares the tab-drop grammar
+
+    @Test
+    func movePane_to_rootEdge_takes_the_whole_edge() throws {
+        let (tab, ids) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let aID = try #require(ids["a"])
+        #expect(tab.movePane(aID, to: .rootEdge(.bottom)))
+        let frame = try #require(tab.splitRoot.paneFrames()[aID])
+        #expect(abs(frame.width - 1) < 0.001)
+        #expect(abs(frame.minY - 0.5) < 0.001)
+        #expect(tab.focusedPaneID == aID)
+    }
+
+    @Test
+    func movePane_to_divider_equalizes() throws {
+        let (tab, ids) = makeTab(H(pane("a"), H(pane("b"), pane("c"))), focused: "a")
+        let aID = try #require(ids["a"])
+        #expect(try tab.movePane(aID, to: .divider(#require(ids["c"]), .right)))
+        // a detaches from the left, lands after c; three equal columns.
+        let frames = tab.splitRoot.paneFrames()
+        for frame in frames.values {
+            #expect(abs(frame.width - 1.0 / 3.0) < 0.001)
+        }
+        #expect(try abs(#require(frames[aID]).minX - 2.0 / 3.0) < 0.001)
+    }
+
+    @Test
+    func movePane_to_target_at_itself_is_noop() throws {
+        let (tab, ids) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let aID = try #require(ids["a"])
+        #expect(!tab.movePane(aID, to: .pane(aID, .left)))
+        #expect(!tab.movePane(aID, to: .divider(aID, .right)))
+        #expect(tab.splitRoot.allPanes().count == 2)
+    }
+
+    @Test
+    func movePane_to_rootEdge_with_only_pane_is_noop() throws {
+        let (tab, ids) = makeTab(pane("a"), focused: "a")
+        #expect(try !tab.movePane(#require(ids["a"]), to: .rootEdge(.left)))
+    }
+
     // MARK: - movePane
 
     @Test

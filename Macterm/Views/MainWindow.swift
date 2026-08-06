@@ -245,6 +245,10 @@ struct WorkspaceView: View {
     let project: Project
     @Environment(AppState.self)
     private var appState
+    /// The pane currently dragged by its grab handle, bubbled up via
+    /// `DraggingPaneKey` so the shared drop target can refuse self-targets.
+    @State
+    private var draggedPaneID: UUID?
 
     var body: some View {
         if let ws = appState.workspaces[project.id], let tab = ws.activeTab {
@@ -269,27 +273,35 @@ struct WorkspaceView: View {
                 onCommandFinished: { paneID in
                     appState.acknowledgeFinishedCommandIfActive(paneID: paneID, projectID: project.id)
                 },
-                onToggleZoom: { tab.toggleZoom(paneID: $0) },
-                onMovePane: { source, destination, zone in
-                    if tab.movePane(source, onto: destination, zone: zone) {
-                        appState.saveWorkspaces()
-                    }
-                }
+                onToggleZoom: { tab.toggleZoom(paneID: $0) }
             )
             .id(renderedNode.id)
-            // Sidebar tab drags land here, resolved against the workspace's
-            // whole geometry (#227). Uses `renderedNode`, not `tab.splitRoot`:
-            // while zoomed the user sees one pane, so a drop should read as a
-            // local split of it, not of the hidden layout.
+            // Pane grab-handle drags AND sidebar tab drags land on one shared
+            // target, resolved against the workspace's whole geometry (#227).
+            // Uses `renderedNode`, not `tab.splitRoot`: while zoomed the user
+            // sees one pane, so a drop should read as a local split of it,
+            // not of the hidden layout.
             .overlay {
-                WorkspaceTabDropTarget(node: renderedNode) { movable, target in
-                    appState.mergeTab(
-                        movable.tabID,
-                        from: movable.sourceProjectID,
-                        at: target,
-                        inProject: project.id
-                    )
-                }
+                WorkspaceDropTarget(
+                    node: renderedNode,
+                    draggedPaneID: draggedPaneID,
+                    onMovePane: { paneID, target in
+                        if tab.movePane(paneID, to: target) {
+                            appState.saveWorkspaces()
+                        }
+                    },
+                    onMergeTab: { movable, target in
+                        appState.mergeTab(
+                            movable.tabID,
+                            from: movable.sourceProjectID,
+                            at: target,
+                            inProject: project.id
+                        )
+                    }
+                )
+            }
+            .onPreferenceChange(DraggingPaneKey.self) { value in
+                MainActor.assumeIsolated { draggedPaneID = value }
             }
             .overlay(alignment: .topTrailing) {
                 if tab.zoomedPaneID != nil {

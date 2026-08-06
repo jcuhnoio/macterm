@@ -221,27 +221,38 @@ final class TerminalTab: Identifiable {
         splitRoot.settingRatio(paneID: paneID, axis: axis, ratio: ratio)
     }
 
-    /// Move a pane next to another pane (drag-and-drop reorganization):
-    /// detach it from its current spot — the tree collapses around it — and
-    /// split the destination, placing the moved pane on the `zone` side. The
-    /// `Pane` object is reused as-is, so its surface and shell are untouched.
-    /// Returns false (tree unchanged) for a self-drop, a pane the tree doesn't
-    /// contain, or the only pane in the tab.
+    /// Move a pane next to another pane — the legacy grab-handle drop shape,
+    /// now a thin alias for the target-based move below.
     @discardableResult
     func movePane(_ paneID: UUID, onto destinationID: UUID, zone: PaneDropZone) -> Bool {
-        guard paneID != destinationID,
-              let pane = splitRoot.findPane(id: paneID),
-              splitRoot.findPane(id: destinationID) != nil,
+        movePane(paneID, to: .pane(destinationID, zone))
+    }
+
+    /// Move a pane to a resolved drop target (grab-handle drag): detach it —
+    /// the tree collapses around it — and merge its single-pane tree back in
+    /// through `mergeTree`, so pane drags share the exact placement code (and
+    /// grammar: whole-edge, divider, local) of a sidebar tab drop. The `Pane`
+    /// object is reused as-is; surface and shell are untouched. Returns false
+    /// (tree unchanged) for a target aimed at the moved pane itself, a pane
+    /// the tree doesn't contain, or the only pane in the tab.
+    @discardableResult
+    func movePane(_ paneID: UUID, to target: TabDropResolution.Target) -> Bool {
+        switch target {
+        case let .pane(destinationID, _),
+             let .divider(destinationID, _):
+            guard destinationID != paneID else { return false }
+        case .rootEdge:
+            break
+        }
+        guard let pane = splitRoot.findPane(id: paneID),
               let detached = splitRoot.removing(paneID: paneID)
         else { return false }
-        let (newRoot, inserted) = detached.inserting(
-            pane: pane, at: destinationID, direction: zone.splitDirection, position: zone.splitPosition
-        )
-        guard inserted else { return false }
-        splitRoot = newRoot
-        zoomedPaneID = nil
-        focusPane(paneID)
-        if Preferences.shared.autoTilingEnabled { splitRoot.rebalanced() }
+        let original = splitRoot
+        splitRoot = detached
+        guard mergeTree(.pane(pane), at: target) else {
+            splitRoot = original
+            return false
+        }
         return true
     }
 
