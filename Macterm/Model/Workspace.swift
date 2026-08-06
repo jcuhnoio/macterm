@@ -233,6 +233,37 @@ final class TerminalTab: Identifiable {
         return true
     }
 
+    /// Merge another tab's whole split tree into this tab as a horizontal
+    /// split, with the adopted tree on `side` (#227 — dragging a sidebar tab
+    /// onto another tab row). The adopted panes are reused as-is: surfaces and
+    /// running shells are untouched. Focus lands on the adopted tree's first
+    /// pane so the user follows the tab they dragged.
+    func adoptTree(_ node: SplitNode, side: SplitPosition) {
+        let first: SplitNode = side == .first ? node : splitRoot
+        let second: SplitNode = side == .first ? splitRoot : node
+        splitRoot = .split(SplitBranch(direction: .horizontal, first: first, second: second))
+        zoomedPaneID = nil
+        if let paneID = node.allPanes().first?.id { focusPane(paneID) }
+        if Preferences.shared.autoTilingEnabled { splitRoot.rebalanced() }
+    }
+
+    /// Merge another tab's split tree next to one of this tab's panes (#227 —
+    /// dragging a sidebar tab into the workspace): the destination pane is
+    /// wrapped in a new split with the adopted tree on the `zone` side.
+    /// Returns false (tree unchanged) when the pane isn't in this tab.
+    @discardableResult
+    func insertTree(_ node: SplitNode, at destinationPaneID: UUID, zone: PaneDropZone) -> Bool {
+        let (newRoot, inserted) = splitRoot.inserting(
+            node: node, at: destinationPaneID, direction: zone.splitDirection, position: zone.splitPosition
+        )
+        guard inserted else { return false }
+        splitRoot = newRoot
+        zoomedPaneID = nil
+        if let paneID = node.allPanes().first?.id { focusPane(paneID) }
+        if Preferences.shared.autoTilingEnabled { splitRoot.rebalanced() }
+        return true
+    }
+
     /// Remove a pane from the tree. Returns `.onlyPaneLeft` if the caller should
     /// close the whole tab (the pane was the last one), otherwise `.removed`;
     /// `.notFound` when the pane isn't in this tab. The pane's surface is

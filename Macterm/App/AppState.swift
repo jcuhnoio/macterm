@@ -936,6 +936,95 @@ final class AppState {
         saveWorkspaces()
     }
 
+    /// Merge a tab into another tab as a split (#227 — dragging a sidebar tab
+    /// onto another tab row): the source tab is removed from its workspace and
+    /// its whole split tree lands beside the destination tab's tree, on `side`
+    /// of a horizontal split. Panes, surfaces, and running shells are reused
+    /// as-is. No-op when either tab is missing or source and destination are
+    /// the same tab.
+    func mergeTab(
+        _ tabID: UUID,
+        from sourceProjectID: UUID,
+        intoTab destTabID: UUID,
+        inProject destProjectID: UUID,
+        side: SplitPosition
+    ) {
+        guard tabID != destTabID,
+              let destTab = workspaces[destProjectID]?.tabs.first(where: { $0.id == destTabID }),
+              let sourceTab = detachTabForMerge(tabID, from: sourceProjectID, to: destProjectID)
+        else { return }
+        destTab.adoptTree(sourceTab.splitRoot, side: side)
+        finishMerge(intoTab: destTabID, inProject: destProjectID)
+    }
+
+    /// Merge a tab next to a specific pane (#227 — dragging a sidebar tab into
+    /// the workspace): the destination pane is wrapped in a new split with the
+    /// source tab's tree on the `zone` side. No-op when the pane isn't in any
+    /// tab of the destination project or lives in the source tab itself.
+    func mergeTab(
+        _ tabID: UUID,
+        from sourceProjectID: UUID,
+        ontoPane paneID: UUID,
+        inProject destProjectID: UUID,
+        zone: PaneDropZone
+    ) {
+        guard let destTab = workspaces[destProjectID]?.tabs.first(where: { $0.splitRoot.contains(paneID: paneID) }),
+              destTab.id != tabID,
+              let sourceTab = detachTabForMerge(tabID, from: sourceProjectID, to: destProjectID)
+        else { return }
+        destTab.insertTree(sourceTab.splitRoot, at: paneID, zone: zone)
+        finishMerge(intoTab: destTab.id, inProject: destProjectID)
+    }
+
+    /// Pull a tab out of its workspace for a merge, keeping its panes (and
+    /// their surfaces) alive, and restamp their routing identity when the merge
+    /// crosses projects — the same rebind `moveTab` does, for the same reason.
+    private func detachTabForMerge(_ tabID: UUID, from sourceProjectID: UUID, to destProjectID: UUID) -> TerminalTab? {
+        guard let source = workspaces[sourceProjectID],
+              let tab = source.tabs.first(where: { $0.id == tabID })
+        else { return nil }
+        source.closeTab(tabID)
+        if sourceProjectID != destProjectID {
+            for pane in tab.splitRoot.allPanes() {
+                pane.rebind(projectID: destProjectID)
+            }
+        }
+        return tab
+    }
+
+    /// Land the user on the merged tab, mirroring `moveTab`'s selection.
+    private func finishMerge(intoTab destTabID: UUID, inProject destProjectID: UUID) {
+        workspaces[destProjectID]?.selectTab(destTabID)
+        activeProjectID = destProjectID
+        recordProjectVisit(destProjectID)
+        saveWorkspaces()
+    }
+
+    /// Split a tab apart (#227 — "Separate Panes"): every pane after the first
+    /// (in tree order) moves into its own fresh tab inserted right after the
+    /// source tab, and the source keeps only its first pane. The `Pane`
+    /// objects are reused as-is, so surfaces and running shells survive.
+    /// No-op for a single-pane tab.
+    func separateTabPanes(_ tabID: UUID, projectID: UUID) {
+        guard let ws = workspaces[projectID],
+              let index = ws.tabs.firstIndex(where: { $0.id == tabID })
+        else { return }
+        let tab = ws.tabs[index]
+        let panes = tab.splitRoot.allPanes()
+        guard panes.count > 1, let firstPane = panes.first else { return }
+        logger.debug("separateTabPanes: \(tabID, privacy: .public) panes=\(panes.count, privacy: .public)")
+        tab.splitRoot = .pane(firstPane)
+        tab.zoomedPaneID = nil
+        tab.paneFocusHistory = RecencyStack(limit: 20)
+        tab.focusedPaneID = firstPane.id
+        for (offset, pane) in panes.dropFirst().enumerated() {
+            let newTab = TerminalTab(id: UUID(), splitRoot: .pane(pane), focusedPaneID: pane.id)
+            ws.tabs.insert(newTab, at: index + 1 + offset)
+        }
+        ws.selectTab(tabID)
+        saveWorkspaces()
+    }
+
     /// Reorder a tab within its own project to an absolute drop index (the
     /// offset a sidebar drag-and-drop reports). Persists on a real move.
     func reorderTab(_ tabID: UUID, inProject projectID: UUID, toIndex destination: Int) {

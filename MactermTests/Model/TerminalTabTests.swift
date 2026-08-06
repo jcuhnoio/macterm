@@ -258,6 +258,53 @@ struct TerminalTabTests {
         #expect(try !tab.paneFocusHistory.items.contains(#require(ids["b"])))
     }
 
+    // MARK: - adoptTree / insertTree (#227)
+
+    @Test
+    func adoptTree_side_second_appends_and_focuses_adopted_pane() {
+        let (tab, ids) = makeTab(pane("a"), focused: "a")
+        let (incoming, incomingIDs) = build(V(pane("x"), pane("y")))
+        tab.adoptTree(incoming, side: .second)
+        #expect(tab.splitRoot.allPanes().map(\.id) == [ids["a"], incomingIDs["x"], incomingIDs["y"]])
+        #expect(tab.focusedPaneID == incomingIDs["x"])
+    }
+
+    @Test
+    func adoptTree_side_first_prepends() {
+        let (tab, ids) = makeTab(pane("a"), focused: "a")
+        let (incoming, incomingIDs) = build(pane("x"))
+        tab.adoptTree(incoming, side: .first)
+        #expect(tab.splitRoot.allPanes().map(\.id) == [incomingIDs["x"], ids["a"]])
+    }
+
+    @Test
+    func adoptTree_exits_zoom() {
+        let (tab, ids) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        tab.zoomedPaneID = ids["a"]
+        let (incoming, _) = build(pane("x"))
+        tab.adoptTree(incoming, side: .second)
+        #expect(tab.zoomedPaneID == nil)
+    }
+
+    @Test
+    func insertTree_wraps_destination_pane_in_zone_split() throws {
+        let (tab, ids) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let (incoming, incomingIDs) = build(pane("x"))
+        let ok = try tab.insertTree(incoming, at: #require(ids["b"]), zone: .top)
+        #expect(ok)
+        #expect(tab.splitRoot.allPanes().map(\.id) == [ids["a"], incomingIDs["x"], ids["b"]])
+        #expect(tab.focusedPaneID == incomingIDs["x"])
+    }
+
+    @Test
+    func insertTree_unknown_pane_leaves_tree_unchanged() {
+        let (tab, _) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let (incoming, _) = build(pane("x"))
+        let ok = tab.insertTree(incoming, at: UUID(), zone: .left)
+        #expect(!ok)
+        #expect(tab.splitRoot.allPanes().count == 2)
+    }
+
     // MARK: - movePane
 
     @Test

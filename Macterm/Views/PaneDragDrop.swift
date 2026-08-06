@@ -287,15 +287,18 @@ enum PaneDropState: Equatable {
 }
 
 /// Per-pane drop target. The zone follows the cursor; the actual move is
-/// performed by `onMove(sourcePaneID, destinationPaneID, zone)`.
+/// performed by `onMove(sourcePaneID, destinationPaneID, zone)` for a pane
+/// drag, or `onMergeTab(movableTab, destinationPaneID, zone)` for a sidebar
+/// tab dragged into the workspace (#227).
 struct PaneDropDelegate: DropDelegate {
     @Binding var dropState: PaneDropState
     let viewSize: CGSize
     let destinationPaneID: UUID
     let onMove: @MainActor (UUID, UUID, PaneDropZone) -> Void
+    var onMergeTab: @MainActor (MovableTab, UUID, PaneDropZone) -> Void = { _, _, _ in }
 
     func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [.mactermPaneID])
+        info.hasItemsConforming(to: [.mactermPaneID, .mactermTab])
     }
 
     func dropEntered(info: DropInfo) {
@@ -322,15 +325,31 @@ struct PaneDropDelegate: DropDelegate {
         // within the application), so the payload can be read synchronously
         // off the drag pasteboard instead of round-tripping through the
         // NSItemProvider's background-queue loader.
-        guard let data = NSPasteboard(name: .drag).pasteboardItems?
+        if let data = NSPasteboard(name: .drag).pasteboardItems?
             .compactMap({ $0.data(forType: .mactermPaneID) })
             .first, data.count == 16
-        else { return false }
-        let sourceID = data.withUnsafeBytes { UUID(uuid: $0.loadUnaligned(as: uuid_t.self)) }
-        guard sourceID != destinationPaneID else { return false }
+        {
+            let sourceID = data.withUnsafeBytes { UUID(uuid: $0.loadUnaligned(as: uuid_t.self)) }
+            guard sourceID != destinationPaneID else { return false }
 
-        MainActor.assumeIsolated {
-            onMove(sourceID, destinationPaneID, zone)
+            MainActor.assumeIsolated {
+                onMove(sourceID, destinationPaneID, zone)
+            }
+            return true
+        }
+
+        // A sidebar tab dropped into the workspace (#227). The payload is a
+        // Transferable whose data may be rendered lazily, so it goes through
+        // the item provider's async loader rather than the sync pasteboard
+        // read above.
+        guard let provider = info.itemProviders(for: [.mactermTab]).first else { return false }
+        let destinationPaneID = destinationPaneID
+        let onMergeTab = onMergeTab
+        provider.loadDataRepresentation(forTypeIdentifier: UTType.mactermTab.identifier) { data, _ in
+            guard let data, let movable = try? JSONDecoder().decode(MovableTab.self, from: data) else { return }
+            Task { @MainActor in
+                onMergeTab(movable, destinationPaneID, zone)
+            }
         }
         return true
     }

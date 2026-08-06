@@ -274,6 +274,15 @@ struct WorkspaceView: View {
                     if tab.movePane(source, onto: destination, zone: zone) {
                         appState.saveWorkspaces()
                     }
+                },
+                onMergeTab: { movable, paneID, zone in
+                    appState.mergeTab(
+                        movable.tabID,
+                        from: movable.sourceProjectID,
+                        ontoPane: paneID,
+                        inProject: project.id,
+                        zone: zone
+                    )
                 }
             )
             .id(renderedNode.id)

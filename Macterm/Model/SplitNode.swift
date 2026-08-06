@@ -1229,21 +1229,34 @@ extension SplitNode {
         direction: SplitDirection,
         position: SplitPosition
     ) -> (node: SplitNode, inserted: Bool) {
+        inserting(node: .pane(pane), at: destinationID, direction: direction, position: position)
+    }
+
+    /// Insert a whole subtree next to the pane `destinationID`, wrapping the
+    /// destination in a new split with `node` at `position`. Generalizes the
+    /// single-pane variant so a dragged tab's entire split tree can land beside
+    /// a pane in one structural move (its panes and surfaces reused as-is).
+    func inserting(
+        node: SplitNode,
+        at destinationID: UUID,
+        direction: SplitDirection,
+        position: SplitPosition
+    ) -> (node: SplitNode, inserted: Bool) {
         switch self {
         case let .pane(p) where p.id == destinationID:
-            let first: SplitNode = position == .first ? .pane(pane) : .pane(p)
-            let second: SplitNode = position == .first ? .pane(p) : .pane(pane)
+            let first: SplitNode = position == .first ? node : .pane(p)
+            let second: SplitNode = position == .first ? .pane(p) : node
             return (.split(SplitBranch(direction: direction, first: first, second: second)), true)
         case .pane:
             return (self, false)
         case let .split(branch):
             let (newFirst, ok1) = branch.first.inserting(
-                pane: pane, at: destinationID, direction: direction, position: position
+                node: node, at: destinationID, direction: direction, position: position
             )
             branch.first = newFirst
             if ok1 { return (.split(branch), true) }
             let (newSecond, ok2) = branch.second.inserting(
-                pane: pane, at: destinationID, direction: direction, position: position
+                node: node, at: destinationID, direction: direction, position: position
             )
             branch.second = newSecond
             return (.split(branch), ok2)
