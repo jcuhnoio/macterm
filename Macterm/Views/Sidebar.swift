@@ -680,19 +680,6 @@ private struct SidebarTabRow: View {
                 .onSubmit { commit() }
                 .onExitCommand { cancelRename() }
                 .onAppear { focused = true }
-        } else if tab.customTitle == nil, tab.splitRoot.allPanes().count > 1 {
-            // A split tab shows one small container per pane (#227) instead of
-            // concatenating the pane titles with a pipe. A custom title still
-            // wins — the user named the whole tab.
-            HStack(spacing: 3) {
-                ForEach(tab.splitRoot.allPanes()) { pane in
-                    Text(pane.sidebarSegmentTitle)
-                        .lineLimit(1)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(RoundedRectangle(cornerRadius: 4).fill(MactermTheme.surface))
-                }
-            }
         } else {
             Text(tab.sidebarTitle)
                 .lineLimit(1)
@@ -704,9 +691,39 @@ private struct SidebarTabRow: View {
         showAgentIcons ? tab.agentIcon : nil
     }
 
+    /// One tab-like container per pane, sharing the row in equal widths —
+    /// the Arc-style split-tab look from #227. Each container carries its own
+    /// icon (the pane's live agent logo when it has one, else the user's tab
+    /// icon) and the pane's title.
+    private var splitContainers: some View {
+        HStack(spacing: 4) {
+            ForEach(tab.splitRoot.allPanes()) { pane in
+                HStack(spacing: 4) {
+                    let agent = showAgentIcons ? pane.agentIcon : nil
+                    if tabIconSymbol != Preferences.noIcon || agent != nil {
+                        SidebarRowIcon(symbol: tabIconSymbol, index: index, agent: agent)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(pane.sidebarSegmentTitle)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 5).fill(MactermTheme.surface))
+            }
+        }
+    }
+
     var body: some View {
         Group {
-            if tabIconSymbol == Preferences.noIcon {
+            if !isRenaming, tab.customTitle == nil, tab.splitRoot.allPanes().count > 1 {
+                // #227: a split tab reads as multiple tabs sharing one row —
+                // each pane gets its own tab-like container (icon + title)
+                // instead of one tab concatenating the titles with a pipe. A
+                // custom title still wins: the user named the whole tab.
+                splitContainers
+            } else if tabIconSymbol == Preferences.noIcon {
                 Label {
                     titleContent
                 } icon: {
