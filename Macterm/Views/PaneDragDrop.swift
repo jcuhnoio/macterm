@@ -398,6 +398,10 @@ struct WorkspaceTabDropDelegate: DropDelegate {
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
+        // dropUpdated can fire after performDrop; without this guard it would
+        // re-show the preview on a completed drop and leave it stuck (same
+        // race PaneDropDelegate guards against).
+        guard resolution != nil else { return DropProposal(operation: .forbidden) }
         update(info)
         return DropProposal(operation: resolution == nil ? .cancel : .move)
     }

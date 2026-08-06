@@ -513,6 +513,10 @@ private struct TabMergeDropDelegate: DropDelegate {
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         guard mergeState != .rejected else { return DropProposal(operation: .cancel) }
+        // dropUpdated can fire after performDrop; without this guard it would
+        // re-show the merge highlight on a completed drop (same race the pane
+        // drop delegate guards against).
+        guard mergeState != .idle else { return DropProposal(operation: .forbidden) }
         mergeState = state(at: info.location)
         return DropProposal(operation: .move)
     }
