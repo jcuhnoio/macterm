@@ -48,8 +48,10 @@ enum TabDropPlacer {
     static let boundaryBand: CGFloat = 0.15
     /// The far end of the perpendicular root band: between the midline and
     /// this coordinate the drop splits the whole workspace; past it the drop
-    /// is local to the hovered pane.
-    static let perpendicularBandEnd: CGFloat = 0.75
+    /// is local to the hovered pane. Deliberately generous — the whole-edge
+    /// placement is the common intent, and the local deep-split keeps the
+    /// outer `1 - perpendicularBandEnd`, matching `boundaryBand`'s width.
+    static let perpendicularBandEnd: CGFloat = 0.85
 
     static func resolve(point: CGPoint, in root: SplitNode) -> TabDropResolution? {
         // Clamp inside the unit square so an edge-exact drop still lands in a

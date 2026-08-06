@@ -61,6 +61,15 @@ struct TabDropPlacementTests {
     }
 
     @Test
+    func the_bottom_band_stays_global_almost_to_the_edge() throws {
+        // The whole-edge placement is the common intent, so its band runs
+        // from the midline nearly to the edge (see perpendicularBandEnd).
+        let (root, _) = twoColumns()
+        let r = try #require(TabDropPlacer.resolve(point: CGPoint(x: 0.25, y: 0.8), in: root))
+        #expect(r.target == .rootEdge(.bottom))
+    }
+
+    @Test
     func deep_in_a_pane_splits_that_pane_down() throws {
         let (root, ids) = twoColumns()
         let r = try #require(TabDropPlacer.resolve(point: CGPoint(x: 0.25, y: 0.9), in: root))
