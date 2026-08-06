@@ -48,10 +48,8 @@ enum TabDropPlacer {
     static let boundaryBand: CGFloat = 0.15
     /// The far end of the perpendicular root band: between the midline and
     /// this coordinate the drop splits the whole workspace; past it the drop
-    /// is local to the hovered pane. Kept slim (the same 15% the edge and
-    /// divider bands get) so the LOCAL top/bottom split — dropping a tab as a
-    /// horizontal strip inside one pane — keeps a comfortable margin.
-    static let perpendicularBandEnd: CGFloat = 0.65
+    /// is local to the hovered pane.
+    static let perpendicularBandEnd: CGFloat = 0.75
 
     static func resolve(point: CGPoint, in root: SplitNode) -> TabDropResolution? {
         // Clamp inside the unit square so an edge-exact drop still lands in a
@@ -68,20 +66,51 @@ enum TabDropPlacer {
             return TabDropResolution(target: .pane(paneID, zone), preview: paneHalf(frame, zone))
         }
 
+        // Side-by-side placements on the ROOT's own axis claim their margins
+        // at FULL cross-axis extent, not gated by the hovered pane's corner
+        // triangles — otherwise the top/bottom zones pinch their hitbox near
+        // those edges and edge/divider drops get hard to hit at any height.
+        let rootAxis = rootBranch.direction
+        let alongRoot = rootAxis == .horizontal ? p.x : p.y
+        let rootUnits = root.tileUnits(along: rootAxis)
+        let rootFraction = 1 / CGFloat(rootUnits + 1)
+        let firstZone: PaneDropZone = rootAxis == .horizontal ? .left : .top
+        let secondZone: PaneDropZone = rootAxis == .horizontal ? .right : .bottom
+        if alongRoot < boundaryBand {
+            return TabDropResolution(target: .rootEdge(firstZone), preview: edgeStrip(zone: firstZone, fraction: rootFraction))
+        }
+        if alongRoot > 1 - boundaryBand {
+            return TabDropResolution(target: .rootEdge(secondZone), preview: edgeStrip(zone: secondZone, fraction: rootFraction))
+        }
+        let leadEdge = rootAxis == .horizontal ? frame.minX : frame.minY
+        let trailEdge = rootAxis == .horizontal ? frame.maxX : frame.maxY
+        if leadEdge > 0.0001, abs(alongRoot - leadEdge) < boundaryBand {
+            return TabDropResolution(
+                target: .divider(paneID, firstZone),
+                preview: dividerStrip(at: leadEdge, fraction: rootFraction, crossing: frame, zone: firstZone)
+            )
+        }
+        if trailEdge < 0.9999, abs(alongRoot - trailEdge) < boundaryBand {
+            return TabDropResolution(
+                target: .divider(paneID, secondZone),
+                preview: dividerStrip(at: trailEdge, fraction: rootFraction, crossing: frame, zone: secondZone)
+            )
+        }
+
+        // Everything else is zone-driven: the perpendicular whole-edge band,
+        // nested (perpendicular-axis) dividers, and local pane splits.
         let axis = zone.splitDirection
         let edge = edgeCoordinate(of: frame, zone: zone)
         let cursor = axis == .horizontal ? p.x : p.y
         let workspaceEdge: CGFloat = zone.splitPosition == .first ? 0 : 1
-        let units = root.tileUnits(along: axis)
-        let fraction = 1 / CGFloat(units + 1)
+        let fraction = 1 / CGFloat(root.tileUnits(along: axis) + 1)
 
         if abs(edge - workspaceEdge) < 0.0001 {
             // The hovered pane's edge on this side IS the workspace boundary.
-            if rootBranch.direction == axis {
-                if abs(cursor - workspaceEdge) < boundaryBand {
-                    return TabDropResolution(target: .rootEdge(zone), preview: edgeStrip(zone: zone, fraction: fraction))
-                }
-            } else {
+            // A side perpendicular to the root axis has no divider or edge
+            // margin of its own, so its root-level band sits just past the
+            // midline; deeper is a local split of the hovered pane.
+            if rootBranch.direction != axis {
                 let inRootBand = zone.splitPosition == .second
                     ? (cursor >= 0.5 && cursor < perpendicularBandEnd)
                     : (cursor <= 0.5 && cursor > 1 - perpendicularBandEnd)

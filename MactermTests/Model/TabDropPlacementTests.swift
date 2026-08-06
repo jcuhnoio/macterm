@@ -62,11 +62,21 @@ struct TabDropPlacementTests {
 
     @Test
     func past_the_global_band_the_local_split_takes_over() throws {
-        // The whole-edge band stays slim so the local horizontal-strip drop
-        // (splitting one pane top/bottom) keeps a comfortable margin.
         let (root, ids) = twoColumns()
-        let r = try #require(TabDropPlacer.resolve(point: CGPoint(x: 0.25, y: 0.7), in: root))
+        let r = try #require(TabDropPlacer.resolve(point: CGPoint(x: 0.25, y: 0.8), in: root))
         #expect(try r.target == .pane(#require(ids["a"]), .bottom))
+    }
+
+    @Test
+    func side_by_side_margins_span_the_full_height() throws {
+        // The root-axis edge and divider bands are NOT gated by the corner
+        // triangles: a drop near the workspace edge or a divider reads as
+        // side-by-side at any height, even deep in a pane's bottom corner.
+        let (root, ids) = twoColumns()
+        let atEdge = try #require(TabDropPlacer.resolve(point: CGPoint(x: 0.05, y: 0.9), in: root))
+        #expect(atEdge.target == .rootEdge(.left))
+        let atDivider = try #require(TabDropPlacer.resolve(point: CGPoint(x: 0.45, y: 0.9), in: root))
+        #expect(try atDivider.target == .divider(#require(ids["a"]), .right))
     }
 
     @Test
