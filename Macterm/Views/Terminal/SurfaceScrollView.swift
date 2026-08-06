@@ -1,5 +1,13 @@
 import AppKit
 import GhosttyKit
+import os
+
+private let logger = Logger(subsystem: appBundleID, category: "SurfaceAttach")
+
+/// Short hex identity for attach-path log lines.
+private func oid(_ object: AnyObject) -> String {
+    String(UInt(bitPattern: ObjectIdentifier(object)), radix: 16)
+}
 
 /// Native overlay scrollbar for a terminal surface, mirroring Ghostty's macOS
 /// approach (Ghostty 1.3.0+, `SurfaceScrollView`).
@@ -62,6 +70,70 @@ final class SurfaceScrollView: NSScrollView {
     private let verticalScrollAccumulator = ITermScrollAccumulator()
 
     nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
+
+    /// The container this view is supposed to live in (set by
+    /// `TerminalSurface.attach`, cleared by `Pane.destroySurface`). During a
+    /// split-tree remount SwiftUI can tear down the OLD hierarchy after the
+    /// new one has already adopted this shared view, yanking it out of its
+    /// new superview (#227 drag-and-drop reorders — the pane went blank until
+    /// the next `updateNSView`). Healing runs from BOTH sides, because either
+    /// event can happen first: `viewDidMoveToSuperview` here re-attaches when
+    /// this view is orphaned while its host is already on-window, and
+    /// `TerminalSurface.SurfaceHost.viewDidMoveToWindow` claims the view when
+    /// the host lands in the window after the orphaning.
+    weak var reattachHost: NSView?
+
+    /// Called when this view ends up orphaned with NO living on-window host
+    /// to heal into — the weak `reattachHost` died with a discarded SwiftUI
+    /// container. Wired to `Pane.requestSurfaceReattach`, which re-renders
+    /// the pane's subtree so SwiftUI re-attaches via a container that is
+    /// guaranteed alive. Cleared by `Pane.destroySurface`.
+    var onOrphaned: (() -> Void)?
+
+    /// Re-parent into `host` (idempotent; sized to fill it).
+    func adopt(into host: NSView) {
+        guard superview !== host else { return }
+        logger.debug("adopt \(oid(self), privacy: .public) into \(oid(host), privacy: .public) win=\(host.window != nil, privacy: .public)")
+        removeFromSuperview()
+        frame = host.bounds
+        autoresizingMask = [.width, .height]
+        host.addSubview(self)
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        logger.debug("didMoveToSuperview \(oid(self), privacy: .public) sv=\(self.superview == nil ? "nil" : "set", privacy: .public)")
+        guard superview == nil else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.superview == nil else { return }
+            if let host = self.reattachHost, host.window != nil {
+                self.adopt(into: host)
+            } else {
+                // No living host to heal into: hand the problem back to
+                // SwiftUI through the pane's reattach tick.
+                logger.debug("orphaned with no live host \(oid(self), privacy: .public)")
+                self.onOrphaned?()
+            }
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Surface creation must not depend on WHICH path put this view on
+        // screen. `TerminalSurface` creates it from make/update, but the
+        // healing paths above can be the ones that actually land the view in
+        // the window — and if no SwiftUI update follows, a pane whose create
+        // was skipped (view off-window at the time) stayed a live shell with
+        // no surface: fully blank until the next focus change. Deferred a
+        // tick so layout has sized the view (the Metal layer needs a
+        // non-zero size).
+        guard window != nil, surfaceView.surface == nil else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window != nil, self.surfaceView.surface == nil else { return }
+            logger.debug("late createSurface \(oid(self), privacy: .public)")
+            self.surfaceView.createSurface()
+        }
+    }
 
     init(surfaceView: GhosttyTerminalNSView) {
         self.surfaceView = surfaceView

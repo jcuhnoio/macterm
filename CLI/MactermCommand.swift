@@ -164,9 +164,50 @@ struct TabCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "tab",
         abstract: "List, create, select, and close tabs.",
-        subcommands: [List.self, New.self, Select.self, Close.self],
+        subcommands: tabSubcommands,
         defaultSubcommand: List.self
     )
+
+    /// Mirrors PaneCommand.paneSubcommands: the debug-only `merge` verb is
+    /// present in debug builds of the CLI and absent in release.
+    private static var tabSubcommands: [ParsableCommand.Type] {
+        var subs: [ParsableCommand.Type] = [List.self, New.self, Select.self, Close.self]
+        #if DEBUG
+        subs.append(Merge.self)
+        #endif
+        return subs
+    }
+
+    #if DEBUG
+    /// DEBUG-only (#227): the sidebar tab-into-workspace drop as a verb, so
+    /// merges can be reproduced and regression-tested without a mouse.
+    struct Merge: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "[debug] Merge a tab into the active tab: beside a pane (--dest) or at the workspace edge."
+        )
+
+        @Option(help: "Source tab (title, UUID, or index).")
+        var tab: String
+
+        @Option(help: "Side to land on: left, right, top, or bottom.")
+        var zone: String
+
+        @Option(help: "Destination pane in the active tab (UUID or index). Omit for the workspace edge.")
+        var dest: String?
+
+        @Option(help: "Project (name, UUID, or index). Defaults to the active project.")
+        var project: String?
+
+        @OptionGroup var options: ConnectionOptions
+
+        func run() throws {
+            var args = ControlArgs(project: project, tab: tab)
+            args.zone = zone
+            args.dest = dest
+            try runControlCommand(command: "tab.merge", args: args, options: options)
+        }
+    }
+    #endif
 
     struct List: ParsableCommand {
         static let configuration = CommandConfiguration(abstract: "List tabs (active project by default).")
@@ -268,6 +309,7 @@ struct PaneCommand: ParsableCommand {
         ]
         #if DEBUG
         subs.append(Resize.self)
+        subs.append(Move.self)
         #endif
         return subs
     }
@@ -513,6 +555,30 @@ struct PaneCommand: ParsableCommand {
             args.cols = cols
             args.rows = rows
             try runControlCommand(command: "pane.resize", args: args, options: options)
+        }
+    }
+
+    /// DEBUG-only (#227): the grab-handle drag-and-drop reshape as a verb, so
+    /// reorders can be reproduced and regression-tested without a mouse.
+    struct Move: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "[debug] Move a pane: beside another pane (--dest) or to the workspace edge."
+        )
+
+        @Option(help: "Side to land on: left, right, top, or bottom.")
+        var zone: String
+
+        @Option(help: "Destination pane (UUID or index, same tab). Omit for the workspace edge.")
+        var dest: String?
+
+        @OptionGroup var target: PaneTarget
+        @OptionGroup var options: ConnectionOptions
+
+        func run() throws {
+            var args = target.controlArgs()
+            args.zone = zone
+            args.dest = dest
+            try runControlCommand(command: "pane.move", args: args, options: options)
         }
     }
     #endif

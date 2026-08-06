@@ -39,6 +39,10 @@ struct TerminalPane: View {
                 pane: pane,
                 focused: focused,
                 isZoomed: isZoomed,
+                // Read here (not just passed through) so the observation
+                // dependency registers: an orphaned-with-no-host bump must
+                // re-render this subtree — see Pane.surfaceReattachTick.
+                reattachTick: pane.surfaceReattachTick,
                 onFocus: onFocus,
                 onProcessExit: onProcessExit,
                 onCommandFinished: onCommandFinished,
@@ -109,6 +113,8 @@ private struct TerminalSurface: NSViewRepresentable {
     let pane: Pane
     let focused: Bool
     let isZoomed: Bool
+    /// Changes force `updateNSView` after an orphaned-with-no-host event.
+    let reattachTick: Int
     let onFocus: () -> Void
     let onProcessExit: () -> Void
     let onCommandFinished: () -> Void
@@ -128,20 +134,47 @@ private struct TerminalSurface: NSViewRepresentable {
         Coordinator()
     }
 
-    func makeNSView(context: Context) -> SurfaceScrollView {
-        // SwiftUI hosts the scroll view; the surface lives inside it. Both are
-        // owned by `Pane` so they survive tab switches / split reshapes.
+    /// Dumb container SwiftUI owns outright. The pane's shared scroll view is
+    /// OUR subview of it, re-parented explicitly — never handed to SwiftUI as
+    /// the representable's view itself. Handing it over directly broke on
+    /// drag-and-drop reorders (#227): a tree reshape remounts the split view,
+    /// SwiftUI builds the new hierarchy (adopting the shared NSView) BEFORE
+    /// tearing down the old one, and the old teardown then yanks the view out
+    /// of its NEW superview — the pane went blank, teardown-order dependent.
+    /// With a disposable container per representable identity, a late yank
+    /// only ever kills an empty container, and `attach` re-asserts parentage.
+    /// The host also claims the scroll view when IT enters the window — the
+    /// scroll-side orphan heal is window-gated, so without this trigger an
+    /// orphaning that lands before the new host is windowed stayed blank
+    /// until the next `updateNSView`.
+    final class SurfaceHost: NSView {
+        weak var scroll: SurfaceScrollView?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            // Claim UNCONDITIONALLY (and correct `reattachHost`): SwiftUI can
+            // create several transient hosts for one pane during a remount,
+            // and the order of make/update calls says nothing about which
+            // one survives. Landing in the window is the survival signal —
+            // discarded hosts never get here.
+            guard window != nil, let scroll else { return }
+            scroll.reattachHost = self
+            scroll.adopt(into: self)
+        }
+    }
+
+    func makeNSView(context: Context) -> SurfaceHost {
+        let host = SurfaceHost()
         let scroll = pane.ensureScrollView()
-        // The pane may have been warmed off-screen by `SurfaceIncubator` (its
-        // shell already running). Detach it from the incubator window before
-        // SwiftUI inserts it — a view can't live in two superviews. This does
-        // not tear down the surface (only `pane.destroySurface()` does).
-        scroll.removeFromSuperview()
+        attach(scroll, to: host)
         let view = scroll.surfaceView
         configure(view)
         // Defer surface creation until the view is actually in a window — the
-        // Metal layer needs a non-zero size to initialize.
+        // Metal layer needs a non-zero size to initialize. The re-attach also
+        // runs after the whole SwiftUI transaction, so it repairs the
+        // teardown-order yank described on `SurfaceHost`.
         DispatchQueue.main.async { [pane] in
+            attach(scroll, to: host)
             if view.surface == nil, view.window != nil {
                 view.createSurface()
             }
@@ -150,10 +183,31 @@ private struct TerminalSurface: NSViewRepresentable {
             }
         }
         context.coordinator.wasFocused = focused
-        return scroll
+        return host
     }
 
-    func updateNSView(_ scroll: SurfaceScrollView, context: Context) {
+    /// Re-parent the pane's shared scroll view into `host` (idempotent). Also
+    /// covers the `SurfaceIncubator` case — the pane may have been warmed in a
+    /// never-shown window, and a view can't live in two superviews. Skipped
+    /// while `host` is off-window so a dying container can't steal the view.
+    private func attach(_ scroll: SurfaceScrollView, to host: SurfaceHost) {
+        host.scroll = scroll
+        scroll.onOrphaned = { [weak pane] in pane?.requestSurfaceReattach() }
+        // Adopt (and point `reattachHost` at this host) only when the host is
+        // already in the window, or the scroll has no home at all. A host
+        // that is off-window while the scroll lives elsewhere must NOT
+        // redirect `reattachHost`: SwiftUI creates transient extra hosts
+        // during a remount and the last make/update is not necessarily the
+        // survivor — the survivor claims the scroll (and corrects the
+        // pointer) in `SurfaceHost.viewDidMoveToWindow`.
+        guard host.window != nil || scroll.superview == nil else { return }
+        scroll.reattachHost = host
+        scroll.adopt(into: host)
+    }
+
+    func updateNSView(_ host: SurfaceHost, context: Context) {
+        let scroll = pane.ensureScrollView()
+        attach(scroll, to: host)
         let view = scroll.surfaceView
         configure(view)
 
@@ -174,13 +228,12 @@ private struct TerminalSurface: NSViewRepresentable {
         }
     }
 
-    static func dismantleNSView(_ scroll: SurfaceScrollView, coordinator _: Coordinator) {
-        // Intentionally empty. The scroll view and its surface are owned by
-        // `Pane`; SwiftUI just borrows them. When the pane is removed from the
-        // tree, AppState calls pane.destroySurface() explicitly.
-        // SwiftUI will have already removed the view from its superview by
-        // the time this runs, so we don't need to do anything here.
-        _ = scroll
+    static func dismantleNSView(_ host: SurfaceHost, coordinator _: Coordinator) {
+        // Intentionally empty. Only the disposable container dies here; the
+        // scroll view and its surface are owned by `Pane`, and when the pane
+        // is removed from the tree AppState calls pane.destroySurface()
+        // explicitly.
+        _ = host
     }
 
     private func configure(_ view: GhosttyTerminalNSView) {

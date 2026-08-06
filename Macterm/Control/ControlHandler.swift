@@ -75,6 +75,8 @@ final class ControlHandler {
         case "pane.resize-split": return try paneResizeSplit(args)
         #if DEBUG
         case "pane.resize": return try paneResize(args)
+        case "pane.move": return try paneMove(args)
+        case "tab.merge": return try tabMerge(args)
         #endif
         case "grid": return try grid(args)
         case "session.list": return try await sessionList()
@@ -536,6 +538,80 @@ final class ControlHandler {
             )
         }
         return ControlData(panes: [paneInfo(target.pane, in: target.tab, workspace: workspace)])
+    }
+
+    /// DEBUG-ONLY (#227): drive `TerminalTab.movePane(to:)` — the grab-handle
+    /// drag-and-drop reshape — headlessly, so reorders can be reproduced and
+    /// regression-tested without a mouse. `dest` targets a pane in the same
+    /// tab (a local `.pane` drop); omitting it moves to the workspace edge on
+    /// the `zone` side (a `.rootEdge` drop).
+    private func paneMove(_ args: ControlArgs) throws -> ControlData {
+        let zone: PaneDropZone
+        switch args.zone {
+        case "left": zone = .left
+        case "right": zone = .right
+        case "top": zone = .top
+        case "bottom": zone = .bottom
+        default:
+            throw ControlError(code: .badRequest, message: "pane.move requires a zone: left, right, top, or bottom")
+        }
+        let (_, workspace) = try resolveWorkspace(args)
+        let source = try resolvePane(args, in: workspace)
+        let target: TabDropResolution.Target
+        if let destSelector = args.dest, !destSelector.isEmpty {
+            var destArgs = args
+            destArgs.pane = destSelector
+            destArgs.session = nil
+            let dest = try resolvePane(destArgs, in: workspace)
+            guard dest.tab === source.tab else {
+                throw ControlError(code: .badRequest, message: "destination pane must be in the same tab")
+            }
+            target = .pane(dest.pane.id, zone)
+        } else {
+            target = .rootEdge(zone)
+        }
+        guard source.tab.movePane(source.pane.id, to: target) else {
+            throw ControlError(
+                code: .badRequest,
+                message: "move failed: self-target, or the pane is the tab's only one"
+            )
+        }
+        appState.saveWorkspaces()
+        return ControlData(panes: [paneInfo(source.pane, in: source.tab, workspace: workspace)])
+    }
+
+    /// DEBUG-ONLY (#227): drive `AppState.mergeTab(at:)` — the sidebar
+    /// tab-into-workspace drop — headlessly. The source tab (`tab` selector)
+    /// merges into the project's ACTIVE tab at the resolved target: beside
+    /// `dest` (a pane in the active tab) or at the workspace edge.
+    private func tabMerge(_ args: ControlArgs) throws -> ControlData {
+        let zone: PaneDropZone
+        switch args.zone {
+        case "left": zone = .left
+        case "right": zone = .right
+        case "top": zone = .top
+        case "bottom": zone = .bottom
+        default:
+            throw ControlError(code: .badRequest, message: "tab.merge requires a zone: left, right, top, or bottom")
+        }
+        let (project, workspace) = try resolveWorkspace(args)
+        let (_, sourceTab) = try resolveTab(args, in: workspace)
+        let target: TabDropResolution.Target
+        if let destSelector = args.dest, !destSelector.isEmpty {
+            var destArgs = args
+            destArgs.pane = destSelector
+            destArgs.session = nil
+            destArgs.tab = nil
+            let dest = try resolvePane(destArgs, in: workspace)
+            target = .pane(dest.pane.id, zone)
+        } else {
+            target = .rootEdge(zone)
+        }
+        appState.mergeTab(sourceTab.id, from: project.id, at: target, inProject: project.id)
+        guard let active = workspace.activeTab else {
+            throw ControlError(code: .notFound, message: "no active tab after merge")
+        }
+        return ControlData(panes: active.splitRoot.allPanes().map { paneInfo($0, in: active, workspace: workspace) })
     }
     #endif
 
