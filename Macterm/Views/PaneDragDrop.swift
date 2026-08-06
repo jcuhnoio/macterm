@@ -343,12 +343,15 @@ struct PaneDropDelegate: DropDelegate {
         // the item provider's async loader rather than the sync pasteboard
         // read above.
         guard let provider = info.itemProviders(for: [.mactermTab]).first else { return false }
-        let destinationPaneID = self.destinationPaneID
-        let onMergeTab = self.onMergeTab
+        // Locally-named copies (not `let x = x` shadows, which hoist over the
+        // whole scope and break the pane-path references above) so the
+        // @Sendable loader closure doesn't capture non-Sendable self.
+        let destination = destinationPaneID
+        let merge = onMergeTab
         provider.loadDataRepresentation(forTypeIdentifier: UTType.mactermTab.identifier) { data, _ in
             guard let data, let movable = try? JSONDecoder().decode(MovableTab.self, from: data) else { return }
             Task { @MainActor in
-                onMergeTab(movable, destinationPaneID, zone)
+                merge(movable, destination, zone)
             }
         }
         return true

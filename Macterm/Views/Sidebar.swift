@@ -530,11 +530,14 @@ private struct TabMergeDropDelegate: DropDelegate {
         // Fallback when the Transferable payload wasn't rendered onto the
         // pasteboard yet: the item provider's async loader.
         guard let provider = info.itemProviders(for: [.mactermTab]).first else { return false }
-        let onMerge = self.onMerge
+        // Locally-named copy (not a `let onMerge = onMerge` shadow, which
+        // hoists over the whole scope and breaks the capture above) so the
+        // @Sendable loader closure doesn't capture non-Sendable self.
+        let merge = onMerge
         provider.loadDataRepresentation(forTypeIdentifier: UTType.mactermTab.identifier) { data, _ in
             guard let data, let movable = try? JSONDecoder().decode(MovableTab.self, from: data) else { return }
             Task { @MainActor in
-                onMerge(movable, side)
+                merge(movable, side)
             }
         }
         return true
