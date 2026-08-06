@@ -431,7 +431,7 @@ private struct MergeableTabRow: View {
     private var mergeState: TabMergeState = .idle
 
     var body: some View {
-        SidebarTabRow(tab: tab, index: index, onRename: onRename)
+        rowContent
             // Stretch to the full row and make every point hit-testable:
             // without this, the drag grab area and the merge drop target hug
             // the label's intrinsic width instead of covering the whole row.
@@ -460,27 +460,45 @@ private struct MergeableTabRow: View {
                 }
             }
             .overlay {
-                mergeHighlight.allowsHitTesting(false)
+                // The append case (already-split destination) keeps a plain
+                // whole-row highlight; the first split previews structurally
+                // via `rowContent` instead.
+                if mergeState == .whole {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(MactermTheme.accent.opacity(0.3))
+                        .allowsHitTesting(false)
+                }
             }
+            .animation(.easeInOut(duration: 0.15), value: mergeState)
     }
 
+    /// The issue's real-time preview: while a drag hovers a single-pane row,
+    /// the splitee's content slides into one half and a drop slot marks the
+    /// half the splitter tab will take, flipping live as the cursor crosses
+    /// the row's midpoint.
     @ViewBuilder
-    private var mergeHighlight: some View {
+    private var rowContent: some View {
         switch mergeState {
-        case .idle,
-             .rejected:
-            EmptyView()
         case let .side(position):
-            GeometryReader { geo in
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(MactermTheme.accent.opacity(0.3))
-                    .frame(width: geo.size.width / 2)
-                    .frame(maxWidth: .infinity, alignment: position == .first ? .leading : .trailing)
+            HStack(spacing: 4) {
+                if position == .first { dropSlot }
+                SidebarTabRow(tab: tab, index: index, onRename: onRename)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if position == .second { dropSlot }
             }
-        case .whole:
-            RoundedRectangle(cornerRadius: 4)
-                .fill(MactermTheme.accent.opacity(0.3))
+        case .idle,
+             .rejected,
+             .whole:
+            SidebarTabRow(tab: tab, index: index, onRename: onRename)
         }
+    }
+
+    /// The empty container the dragged tab will land in.
+    private var dropSlot: some View {
+        RoundedRectangle(cornerRadius: 5)
+            .fill(MactermTheme.accent.opacity(0.2))
+            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(MactermTheme.accent.opacity(0.5)))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
