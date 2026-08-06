@@ -14,6 +14,10 @@ struct SplitTreeView: View {
     let onClosePane: (UUID) -> Void
     let onCommandFinished: (UUID) -> Void
     let onToggleZoom: (UUID) -> Void
+    /// When present, each leaf (except the dragged pane's own) becomes a drop
+    /// target for grab-handle pane drags, reporting into the shared workspace
+    /// resolution (see `PaneDropContext`).
+    let paneDrop: PaneDropContext?
 
     init(
         node: SplitNode,
@@ -26,7 +30,8 @@ struct SplitTreeView: View {
         onSplit: @escaping (UUID, SplitDirection) -> Void,
         onClosePane: @escaping (UUID) -> Void,
         onCommandFinished: @escaping (UUID) -> Void = { _ in },
-        onToggleZoom: @escaping (UUID) -> Void = { _ in }
+        onToggleZoom: @escaping (UUID) -> Void = { _ in },
+        paneDrop: PaneDropContext? = nil
     ) {
         self.node = node
         self.focusedPaneID = focusedPaneID
@@ -39,6 +44,7 @@ struct SplitTreeView: View {
         self.onClosePane = onClosePane
         self.onCommandFinished = onCommandFinished
         self.onToggleZoom = onToggleZoom
+        self.paneDrop = paneDrop
     }
 
     var body: some View {
@@ -53,7 +59,8 @@ struct SplitTreeView: View {
                 onProcessExit: { onClosePane(pane.id) },
                 onCommandFinished: { onCommandFinished(pane.id) },
                 onSplitRequest: { dir in onSplit(pane.id, dir) },
-                onZoomRequest: { onToggleZoom(pane.id) }
+                onZoomRequest: { onToggleZoom(pane.id) },
+                paneDrop: paneDrop
             )
 
         case let .split(branch):
@@ -69,7 +76,8 @@ struct SplitTreeView: View {
                     onSplit: onSplit,
                     onClosePane: onClosePane,
                     onCommandFinished: onCommandFinished,
-                    onToggleZoom: onToggleZoom
+                    onToggleZoom: onToggleZoom,
+                    paneDrop: paneDrop
                 )
                 .id(branch.first.id)
             } second: {
@@ -84,7 +92,8 @@ struct SplitTreeView: View {
                     onSplit: onSplit,
                     onClosePane: onClosePane,
                     onCommandFinished: onCommandFinished,
-                    onToggleZoom: onToggleZoom
+                    onToggleZoom: onToggleZoom,
+                    paneDrop: paneDrop
                 )
                 .id(branch.second.id)
             }
@@ -93,8 +102,8 @@ struct SplitTreeView: View {
 }
 
 /// One leaf of the split tree: the terminal pane plus the grab handle that
-/// starts a pane drag. Drops land on the workspace-level `WorkspaceDropTarget`
-/// (shared with sidebar tab drags), not on the leaf.
+/// starts a pane drag and the leaf's own pane-drop capture, which reports
+/// into the shared workspace resolution (see `PaneDropContext`).
 private struct SplitLeafView: View {
     let pane: Pane
     let isFocused: Bool
@@ -105,6 +114,7 @@ private struct SplitLeafView: View {
     let onCommandFinished: () -> Void
     let onSplitRequest: (SplitDirection) -> Void
     let onZoomRequest: () -> Void
+    let paneDrop: PaneDropContext?
 
     var body: some View {
         TerminalPane(
@@ -124,6 +134,21 @@ private struct SplitLeafView: View {
                 // opacity (#156).
                 MactermTheme.dimOverlay(opacity: Preferences.shared.paneDimOpacity)
                     .allowsHitTesting(false)
+            }
+        }
+        .background {
+            // Pane-drag drop capture, one target per leaf: AppKit only fires
+            // dragging-entered on a transition INTO a destination, so a
+            // whole-workspace target never hears about a drag that started
+            // inside it. The dragged pane's own leaf carries no target.
+            if let paneDrop, paneDrop.draggedPaneID != pane.id {
+                GeometryReader { geo in
+                    Color.clear.onDrop(of: [.mactermPaneID], delegate: LeafPaneDropDelegate(
+                        context: paneDrop,
+                        paneID: pane.id,
+                        viewSize: geo.size
+                    ))
+                }
             }
         }
         .overlay {

@@ -281,70 +281,76 @@ private struct PaneDragSource: NSViewRepresentable {
 
 // MARK: - Workspace drop target (#227)
 
-/// One drop target over the whole split tree, shared by BOTH drags: a pane's
-/// grab handle and a sidebar tab. Deliberately NOT per leaf: the cursor
-/// position picks a LEVEL in the tree (whole-edge, divider, or local pane
-/// split — see `TabDropPlacer`), which needs workspace-relative geometry no
-/// single pane can see. The highlight shows exactly the region the drop
-/// would occupy, so the outcome is visible before release.
-struct WorkspaceDropTarget: View {
-    let node: SplitNode
-    /// The pane currently dragged by its grab handle (from `DraggingPaneKey`),
-    /// so targets aimed at the dragged pane itself resolve to nothing.
+/// Everything the per-leaf pane drop targets need to resolve against the
+/// WHOLE workspace: the rendered tree, the shared resolution/preview binding
+/// owned by the workspace view, the pane currently being dragged, and the
+/// move to perform on release. Leaves only capture events; placement always
+/// goes through `TabDropPlacer` in workspace space.
+struct PaneDropContext {
+    let root: SplitNode
+    let resolution: Binding<TabDropResolution?>
     let draggedPaneID: UUID?
     let onMovePane: @MainActor (UUID, TabDropResolution.Target) -> Void
+}
+
+/// The workspace-level preview host, and the drop target for sidebar TAB
+/// payloads. Tab drags start outside the workspace, so a single whole-area
+/// target hears their dragging-entered; pane drags start INSIDE it (the grab
+/// handle lives in a pane), and AppKit only delivers entered on a transition
+/// INTO a destination — so pane payloads are captured per leaf instead (see
+/// `LeafPaneDropDelegate`) and report into the same shared `resolution`.
+/// Either way the highlight drawn here shows exactly the region the drop
+/// would occupy.
+struct WorkspaceDropTarget: View {
+    let node: SplitNode
+    @Binding var resolution: TabDropResolution?
     /// nil (the quick terminal) refuses sidebar-tab payloads entirely.
     var onMergeTab: (@MainActor (MovableTab, TabDropResolution.Target) -> Void)?
 
-    @State private var resolution: TabDropResolution?
-
     var body: some View {
         GeometryReader { geo in
-            Color.clear
-                .onDrop(
-                    of: onMergeTab == nil ? [.mactermPaneID] : [.mactermPaneID, .mactermTab],
-                    delegate: WorkspaceDropDelegate(
+            Group {
+                if let onMergeTab {
+                    Color.clear.onDrop(of: [.mactermTab], delegate: WorkspaceTabDropDelegate(
                         resolution: $resolution,
                         node: node,
                         viewSize: geo.size,
-                        draggedPaneID: draggedPaneID,
-                        onMovePane: onMovePane,
                         onMergeTab: onMergeTab
-                    )
-                )
-                .overlay(alignment: .topLeading) {
-                    if let resolution {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(MactermTheme.accent.opacity(0.3))
-                            .frame(
-                                width: resolution.preview.width * geo.size.width,
-                                height: resolution.preview.height * geo.size.height
-                            )
-                            .offset(
-                                x: resolution.preview.minX * geo.size.width,
-                                y: resolution.preview.minY * geo.size.height
-                            )
-                            .allowsHitTesting(false)
-                    }
+                    ))
+                } else {
+                    Color.clear
                 }
-                .animation(.easeInOut(duration: 0.12), value: resolution?.preview)
+            }
+            .overlay(alignment: .topLeading) {
+                if let resolution {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(MactermTheme.accent.opacity(0.3))
+                        .frame(
+                            width: resolution.preview.width * geo.size.width,
+                            height: resolution.preview.height * geo.size.height
+                        )
+                        .offset(
+                            x: resolution.preview.minX * geo.size.width,
+                            y: resolution.preview.minY * geo.size.height
+                        )
+                        .allowsHitTesting(false)
+                }
+            }
+            .animation(.easeInOut(duration: 0.12), value: resolution?.preview)
         }
     }
 }
 
-/// Resolves the hover location through `TabDropPlacer` on every update so the
-/// preview tracks the cursor across bands, and applies the move or merge on
-/// release.
-struct WorkspaceDropDelegate: DropDelegate {
+/// Resolves a sidebar tab's hover through `TabDropPlacer` on every update so
+/// the preview tracks the cursor across bands, and merges on release.
+struct WorkspaceTabDropDelegate: DropDelegate {
     @Binding var resolution: TabDropResolution?
     let node: SplitNode
     let viewSize: CGSize
-    let draggedPaneID: UUID?
-    let onMovePane: @MainActor (UUID, TabDropResolution.Target) -> Void
-    let onMergeTab: (@MainActor (MovableTab, TabDropResolution.Target) -> Void)?
+    let onMergeTab: @MainActor (MovableTab, TabDropResolution.Target) -> Void
 
     func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: onMergeTab == nil ? [.mactermPaneID] : [.mactermPaneID, .mactermTab])
+        info.hasItemsConforming(to: [.mactermTab])
     }
 
     func dropEntered(info: DropInfo) {
@@ -371,19 +377,6 @@ struct WorkspaceDropDelegate: DropDelegate {
         }
         resolution = nil
 
-        // A pane drag first: its payload is an eagerly-written UUID, readable
-        // synchronously off the drag pasteboard (this drag never leaves the
-        // app — sourceOperationMask is .move only within the application).
-        if let data = NSPasteboard(name: .drag).pasteboardItems?
-            .compactMap({ $0.data(forType: .mactermPaneID) })
-            .first, data.count == 16
-        {
-            let sourceID = data.withUnsafeBytes { UUID(uuid: $0.loadUnaligned(as: uuid_t.self)) }
-            MainActor.assumeIsolated { onMovePane(sourceID, target) }
-            return true
-        }
-
-        guard let onMergeTab else { return false }
         if let movable = MovableTab.fromDragPasteboard() {
             MainActor.assumeIsolated { onMergeTab(movable, target) }
             return true
@@ -409,19 +402,88 @@ struct WorkspaceDropDelegate: DropDelegate {
             return
         }
         let point = CGPoint(x: info.location.x / viewSize.width, y: info.location.y / viewSize.height)
-        var resolved = MainActor.assumeIsolated { TabDropPlacer.resolve(point: point, in: node) }
-        // A target aimed at the dragged pane itself is meaningless (dropping a
-        // pane beside itself); show nothing rather than a lying preview.
-        if let draggedPaneID {
+        resolution = MainActor.assumeIsolated { TabDropPlacer.resolve(point: point, in: node) }
+    }
+}
+
+/// Per-leaf capture for a dragged PANE. Each leaf the cursor enters fires its
+/// own dragging-entered (unlike one whole-workspace target, which never hears
+/// about a drag that started inside it), converts the local location into
+/// workspace space via the pane's frame in the tree, and resolves through the
+/// same `TabDropPlacer` into the shared resolution — so the placement logic,
+/// bands, and preview are byte-for-byte the ones a sidebar tab drop uses.
+/// The dragged pane's own leaf carries no target (a self-drop is meaningless
+/// and an invalid drop animates back to its origin).
+struct LeafPaneDropDelegate: DropDelegate {
+    let context: PaneDropContext
+    let paneID: UUID
+    let viewSize: CGSize
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.mactermPaneID])
+    }
+
+    func dropEntered(info: DropInfo) {
+        update(info)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard context.resolution.wrappedValue != nil else { return DropProposal(operation: .forbidden) }
+        update(info)
+        return DropProposal(operation: context.resolution.wrappedValue == nil ? .cancel : .move)
+    }
+
+    func dropExited(info _: DropInfo) {
+        context.resolution.wrappedValue = nil
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        update(info)
+        guard let target = context.resolution.wrappedValue?.target else {
+            context.resolution.wrappedValue = nil
+            return false
+        }
+        context.resolution.wrappedValue = nil
+
+        // The pane payload is an eagerly-written UUID, readable synchronously
+        // off the drag pasteboard (this drag never leaves the app).
+        guard let data = NSPasteboard(name: .drag).pasteboardItems?
+            .compactMap({ $0.data(forType: .mactermPaneID) })
+            .first, data.count == 16
+        else { return false }
+        let sourceID = data.withUnsafeBytes { UUID(uuid: $0.loadUnaligned(as: uuid_t.self)) }
+
+        let move = context.onMovePane
+        MainActor.assumeIsolated { move(sourceID, target) }
+        return true
+    }
+
+    private func update(_ info: DropInfo) {
+        guard viewSize.width > 0, viewSize.height > 0 else {
+            context.resolution.wrappedValue = nil
+            return
+        }
+        let resolved: TabDropResolution? = MainActor.assumeIsolated {
+            guard let frame = context.root.paneFrames()[paneID] else { return nil }
+            let point = CGPoint(
+                x: frame.minX + (info.location.x / viewSize.width) * frame.width,
+                y: frame.minY + (info.location.y / viewSize.height) * frame.height
+            )
+            return TabDropPlacer.resolve(point: point, in: context.root)
+        }
+        // A target aimed at the dragged pane itself is meaningless; show
+        // nothing rather than a lying preview.
+        if let dragged = context.draggedPaneID {
             switch resolved?.target {
-            case let .pane(id, _) where id == draggedPaneID,
-                 let .divider(id, _) where id == draggedPaneID:
-                resolved = nil
+            case let .pane(id, _) where id == dragged,
+                 let .divider(id, _) where id == dragged:
+                context.resolution.wrappedValue = nil
+                return
             default:
                 break
             }
         }
-        resolution = resolved
+        context.resolution.wrappedValue = resolved
     }
 }
 

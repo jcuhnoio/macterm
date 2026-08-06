@@ -466,9 +466,13 @@ final class QuickTerminalPanel: NSPanel {
 private struct QuickTerminalView: View {
     @Bindable var state: QuickTerminalSplitState
     /// The pane currently dragged by its grab handle (`DraggingPaneKey`), so
-    /// the shared drop target can refuse self-targets.
+    /// the dragged pane's own leaf drops its target.
     @State
     private var draggedPaneID: UUID?
+    /// The live drop resolution the per-leaf pane targets report into; the
+    /// workspace-level overlay renders its preview.
+    @State
+    private var dropResolution: TabDropResolution?
 
     var body: some View {
         let renderedNode: SplitNode = {
@@ -493,7 +497,15 @@ private struct QuickTerminalView: View {
                 else { return }
                 pane.acknowledgeCommandCompletion()
             },
-            onToggleZoom: { state.tab.toggleZoom(paneID: $0) }
+            onToggleZoom: { state.tab.toggleZoom(paneID: $0) },
+            paneDrop: PaneDropContext(
+                root: renderedNode,
+                resolution: $dropResolution,
+                draggedPaneID: draggedPaneID,
+                onMovePane: { paneID, target in
+                    state.tab.movePane(paneID, to: target)
+                }
+            )
         )
         .id(renderedNode.id)
         .background(MactermTheme.bgWithOpacity)
@@ -501,16 +513,13 @@ private struct QuickTerminalView: View {
         // divider, local). No tab handler: the quick terminal's ephemeral
         // world doesn't adopt workspace tabs.
         .overlay {
-            WorkspaceDropTarget(
-                node: renderedNode,
-                draggedPaneID: draggedPaneID,
-                onMovePane: { paneID, target in
-                    state.tab.movePane(paneID, to: target)
-                }
-            )
+            WorkspaceDropTarget(node: renderedNode, resolution: $dropResolution)
         }
         .onPreferenceChange(DraggingPaneKey.self) { value in
-            MainActor.assumeIsolated { draggedPaneID = value }
+            MainActor.assumeIsolated {
+                draggedPaneID = value
+                if value == nil { dropResolution = nil }
+            }
         }
         .overlay(alignment: .topTrailing) {
             if let zoomID = state.tab.zoomedPaneID {

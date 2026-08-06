@@ -421,6 +421,23 @@ struct TerminalTabTests {
     }
 
     @Test
+    func movePane_moves_without_duplicating_or_losing_panes() throws {
+        // Reordering is detach-then-merge: the moved pane must vanish from
+        // its old spot (the tree collapses around it) and every other pane
+        // must survive exactly once.
+        let (tab, ids) = makeTab(H(pane("a"), V(pane("b"), pane("c"))), focused: "a")
+        let before = Set(tab.splitRoot.allPanes().map(\.id))
+        let cID = try #require(ids["c"])
+        #expect(try tab.movePane(cID, to: .pane(#require(ids["a"]), .top)))
+        let after = tab.splitRoot.allPanes().map(\.id)
+        #expect(Set(after) == before)
+        #expect(after.count == 3)
+        // c left the right column (which collapsed to just b) and now sits
+        // above a.
+        #expect(after == [ids["c"], ids["a"], ids["b"]].compactMap(\.self))
+    }
+
+    @Test
     func movePane_to_target_at_itself_is_noop() throws {
         let (tab, ids) = makeTab(H(pane("a"), pane("b")), focused: "a")
         let aID = try #require(ids["a"])

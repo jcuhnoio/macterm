@@ -246,9 +246,13 @@ struct WorkspaceView: View {
     @Environment(AppState.self)
     private var appState
     /// The pane currently dragged by its grab handle, bubbled up via
-    /// `DraggingPaneKey` so the shared drop target can refuse self-targets.
+    /// `DraggingPaneKey` so the dragged pane's own leaf drops its target.
     @State
     private var draggedPaneID: UUID?
+    /// The live drop resolution shared by the per-leaf pane targets and the
+    /// workspace-level tab target; the workspace overlay renders its preview.
+    @State
+    private var dropResolution: TabDropResolution?
 
     var body: some View {
         if let ws = appState.workspaces[project.id], let tab = ws.activeTab {
@@ -273,23 +277,29 @@ struct WorkspaceView: View {
                 onCommandFinished: { paneID in
                     appState.acknowledgeFinishedCommandIfActive(paneID: paneID, projectID: project.id)
                 },
-                onToggleZoom: { tab.toggleZoom(paneID: $0) }
-            )
-            .id(renderedNode.id)
-            // Pane grab-handle drags AND sidebar tab drags land on one shared
-            // target, resolved against the workspace's whole geometry (#227).
-            // Uses `renderedNode`, not `tab.splitRoot`: while zoomed the user
-            // sees one pane, so a drop should read as a local split of it,
-            // not of the hidden layout.
-            .overlay {
-                WorkspaceDropTarget(
-                    node: renderedNode,
+                onToggleZoom: { tab.toggleZoom(paneID: $0) },
+                paneDrop: PaneDropContext(
+                    root: renderedNode,
+                    resolution: $dropResolution,
                     draggedPaneID: draggedPaneID,
                     onMovePane: { paneID, target in
                         if tab.movePane(paneID, to: target) {
                             appState.saveWorkspaces()
                         }
-                    },
+                    }
+                )
+            )
+            .id(renderedNode.id)
+            // Pane grab-handle drags (captured per leaf) and sidebar tab
+            // drags (captured here) share one resolution and one preview,
+            // resolved against the workspace's whole geometry (#227). Uses
+            // `renderedNode`, not `tab.splitRoot`: while zoomed the user sees
+            // one pane, so a drop should read as a local split of it, not of
+            // the hidden layout.
+            .overlay {
+                WorkspaceDropTarget(
+                    node: renderedNode,
+                    resolution: $dropResolution,
                     onMergeTab: { movable, target in
                         appState.mergeTab(
                             movable.tabID,
@@ -301,7 +311,12 @@ struct WorkspaceView: View {
                 )
             }
             .onPreferenceChange(DraggingPaneKey.self) { value in
-                MainActor.assumeIsolated { draggedPaneID = value }
+                MainActor.assumeIsolated {
+                    draggedPaneID = value
+                    // A drag that ended without a valid drop leaves no exited
+                    // event behind; clear any stray preview.
+                    if value == nil { dropResolution = nil }
+                }
             }
             .overlay(alignment: .topTrailing) {
                 if tab.zoomedPaneID != nil {
