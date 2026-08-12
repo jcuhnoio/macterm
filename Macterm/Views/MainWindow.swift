@@ -168,6 +168,12 @@ struct MainWindow: View {
         switch phase {
         case let .active(point):
             guard !appState.sidebarVisible else { return }
+            // Toggleable in Settings → Appearance → Sidebar. Checked here, not
+            // at the modifier, so flipping it off mid-peek still retracts.
+            guard preferences.peekSidebarWhenHidden else {
+                if isPeeking { endPeek() }
+                return
+            }
             if suppressPeekUntilExit {
                 if point.x > peekStripWidth { suppressPeekUntilExit = false }
                 return

@@ -141,6 +141,12 @@ final class Preferences {
         didSet { defaults.set(showNewProjectButton, forKey: Keys.showNewProjectButton) }
     }
 
+    /// Slide the hidden sidebar out while the pointer sits at the window's
+    /// leading edge, and back in when it leaves (`MainWindow`'s hover peek).
+    var peekSidebarWhenHidden: Bool {
+        didSet { defaults.set(peekSidebarWhenHidden, forKey: Keys.peekSidebarWhenHidden) }
+    }
+
     /// Which appcast channel auto-updates come from. Read by `Updater`'s
     /// `allowedChannelsForUpdater`, so `.beta` makes prerelease items visible to
     /// both the scheduled check and "Check for Updates…". Defaults to `.stable`:
@@ -408,6 +414,7 @@ final class Preferences {
         showAgentIcons = defaults.object(forKey: Keys.showAgentIcons) as? Bool ?? true
         showTabStatusIndicator = defaults.object(forKey: Keys.showTabStatusIndicator) as? Bool ?? false
         showNewProjectButton = defaults.object(forKey: Keys.showNewProjectButton) as? Bool ?? true
+        peekSidebarWhenHidden = defaults.object(forKey: Keys.peekSidebarWhenHidden) as? Bool ?? true
         updateChannel = (defaults.string(forKey: Keys.updateChannel))
             .flatMap(UpdateChannel.init(rawValue:)) ?? .stable
         tabSwitcherVisibility = (defaults.string(forKey: Keys.tabSwitcherVisibility))
@@ -476,6 +483,7 @@ final class Preferences {
         static let showAgentIcons = "macterm.sidebar.showAgentIcons"
         static let showTabStatusIndicator = "macterm.sidebar.showTabStatusIndicator"
         static let showNewProjectButton = "macterm.sidebar.showNewProjectButton"
+        static let peekSidebarWhenHidden = "macterm.sidebar.peekWhenHidden"
         static let updateChannel = "macterm.updates.channel"
         static let tabSwitcherVisibility = "macterm.toolbar.tabSwitcherVisibility"
         static let tabSwitcherPosition = "macterm.toolbar.tabSwitcherPosition"
