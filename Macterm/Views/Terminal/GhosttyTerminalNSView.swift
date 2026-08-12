@@ -3,6 +3,18 @@ import GhosttyKit
 import QuartzCore
 
 final class GhosttyTerminalNSView: NSView {
+    /// In a `.fullSizeContentView` window AppKit keeps a titlebar-height drag
+    /// band at the top (the area above `contentLayoutRect`), and a click there
+    /// moves the window whenever the hit-tested view answers true — NSView's
+    /// default for non-opaque views. With Hide Title Bar on (#226) the
+    /// terminal's top rows sit inside that band, so the default turned clicks
+    /// there into window drags and the surface never saw them. Ghostty solves
+    /// this by overriding `contentLayoutRect` on its NSWindow subclass; we
+    /// don't own SwiftUI's window class, so we answer per-view instead — same
+    /// idea as Ghostty's `NonDraggableHostingView`. Unconditional: a click on
+    /// the terminal should always be terminal input, never a window drag.
+    override var mouseDownCanMoveWindow: Bool { false }
+
     /// Weak registry of every live instance so global operations (e.g. config
     /// reload) can iterate without a central cache.
     @MainActor private static let liveViews = NSHashTable<GhosttyTerminalNSView>.weakObjects()
@@ -27,6 +39,9 @@ final class GhosttyTerminalNSView: NSView {
     /// For a remote pane the same name identifies the session on the REMOTE
     /// host's daemon instead.
     private let sessionName: String
+    /// Stable identity for view-lifetime coordination. Unlike an object address,
+    /// this cannot be reused when a surface is destroyed and recreated.
+    let paneID: UUID
 
     /// The parsed `[user@]host:dir` spec when this pane belongs to a remote
     /// project (#104); nil for local panes. A remote surface runs
@@ -124,6 +139,29 @@ final class GhosttyTerminalNSView: NSView {
         // which also carries row growth.
         lastScrollbarSnapshot = ScrollbarSnapshot(total: total, offset: offset, len: len)
         onScrollbarUpdate?(total, offset, len)
+    }
+
+    func surfaceDidRender() {
+        onTerminalRender?()
+    }
+
+    /// The most recent OSC 11 background reported by this surface. It is
+    /// stronger evidence than pixel inference and stays active until the
+    /// surface config changes or the terminal restores its configured color.
+    private(set) var reportedBackgroundColor: NSColor?
+    var sampledDominantBackgroundColor: NSColor?
+
+    func surfaceDidChangeBackgroundColor(_ color: NSColor) {
+        reportedBackgroundColor = color
+        onBackgroundColorChange?(color)
+    }
+
+    func surfaceConfigDidChange(backgroundColor: NSColor?) {
+        guard let reportedBackgroundColor,
+              backgroundColor?.isVisuallyEqual(to: reportedBackgroundColor) != true
+        else { return }
+        self.reportedBackgroundColor = nil
+        AdaptiveTerminalChrome.shared.terminalBackgroundDidReset(in: self)
     }
 
     /// Deliver a throttled (~500ms) output heartbeat from the pty IO path
@@ -232,6 +270,9 @@ final class GhosttyTerminalNSView: NSView {
     var onCommandFinished: ((Int16, UInt64) -> Void)?
     var onProgressStarted: (() -> Void)?
     var onProgressFinished: (() -> Void)?
+    var onTerminalRender: (() -> Void)?
+    var onBackgroundColorChange: ((NSColor) -> Void)?
+    var onAdaptiveBackgroundChange: ((NSColor?) -> Void)?
     /// libghostty pushes scrollback geometry (all values in rows) whenever the
     /// viewport, scrollback size, or visible row count changes.
     /// `(total, offset, len)`: total rows including scrollback, the first
@@ -266,6 +307,11 @@ final class GhosttyTerminalNSView: NSView {
     /// pane supplies it.
     var titleProvider: (() -> String?)?
     var isFocused: Bool = false
+
+    func presentAdaptivePaneBackground(_ color: NSColor?) {
+        onAdaptiveBackgroundChange?(color)
+    }
+
     var currentPwd: String?
 
     /// True while libghostty reports the surface is at a password prompt
@@ -310,6 +356,7 @@ final class GhosttyTerminalNSView: NSView {
     private var currentKeyEvent: NSEvent?
 
     init(
+        paneID: UUID,
         workingDirectory: String,
         sessionName: String,
         command: String? = nil,
@@ -318,6 +365,7 @@ final class GhosttyTerminalNSView: NSView {
         remoteSpec: ProjectPath? = nil,
         remoteZmxPath: String? = nil
     ) {
+        self.paneID = paneID
         self.workingDirectory = workingDirectory
         self.sessionName = sessionName
         self.command = command

@@ -556,6 +556,12 @@ private struct AppearanceSettings: View {
     private var liquidGlassStyle: WindowGlassStyle = Preferences.shared.windowGlassStyle
     @State
     private var paneDimOpacity: Double = Preferences.shared.paneDimOpacity
+    @State
+    private var adaptiveTerminalChrome: Bool = Preferences.shared.adaptiveTerminalChromeEnabled
+    /// Inverted view of `Preferences.hideTitleBar`: the control reads as
+    /// "Show toolbar" (on by default), the preference stores the hide.
+    @State
+    private var showToolbar: Bool = !Preferences.shared.hideTitleBar
 
     var body: some View {
         Form {
@@ -601,6 +607,16 @@ private struct AppearanceSettings: View {
 
                 Text(blurFootnote)
                     .settingsCaption()
+            }
+
+            Section("Terminal") {
+                Toggle("Match terminal app backgrounds", isOn: $adaptiveTerminalChrome)
+                    .onChange(of: adaptiveTerminalChrome) { _, enabled in
+                        Preferences.shared.adaptiveTerminalChromeEnabled = enabled
+                    }
+                Text("Matches the whole window for a single pane; in a split, only each full-screen app's pane changes color.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Split Panes") {
@@ -660,27 +676,37 @@ private struct AppearanceSettings: View {
             }
 
             Section("Toolbar") {
-                Picker("Tab switcher", selection: $tabSwitcherVisibility) {
-                    ForEach(TabSwitcherVisibility.allCases) { option in
-                        Text(option.displayName).tag(option.rawValue)
+                Toggle("Show toolbar", isOn: $showToolbar)
+                    .onChange(of: showToolbar) { _, v in
+                        Preferences.shared.hideTitleBar = !v
                     }
-                }
-                .onChange(of: tabSwitcherVisibility) { _, v in
-                    Preferences.shared.tabSwitcherVisibility = TabSwitcherVisibility(rawValue: v) ?? .whenMultiple
-                }
-                Text("Numbered control in the title bar for switching tabs by index.")
+                Text("Hiding it removes the title bar, window buttons, and drag area; switch tabs via the sidebar or ⌘1–9.")
                     .settingsCaption()
 
-                Picker("Tab switcher position", selection: $tabSwitcherPosition) {
-                    ForEach(TabSwitcherPosition.allCases) { option in
-                        Text(option.displayName).tag(option.rawValue)
+                Group {
+                    Picker("Tab switcher", selection: $tabSwitcherVisibility) {
+                        ForEach(TabSwitcherVisibility.allCases) { option in
+                            Text(option.displayName).tag(option.rawValue)
+                        }
                     }
+                    .onChange(of: tabSwitcherVisibility) { _, v in
+                        Preferences.shared.tabSwitcherVisibility = TabSwitcherVisibility(rawValue: v) ?? .whenMultiple
+                    }
+                    Text("Numbered control in the title bar for switching tabs by index.")
+                        .settingsCaption()
+
+                    Picker("Tab switcher position", selection: $tabSwitcherPosition) {
+                        ForEach(TabSwitcherPosition.allCases) { option in
+                            Text(option.displayName).tag(option.rawValue)
+                        }
+                    }
+                    .onChange(of: tabSwitcherPosition) { _, v in
+                        Preferences.shared.tabSwitcherPosition = TabSwitcherPosition(rawValue: v) ?? .trailing
+                    }
+                    Text("Left places the switcher before the window title, next to the sidebar.")
+                        .settingsCaption()
                 }
-                .onChange(of: tabSwitcherPosition) { _, v in
-                    Preferences.shared.tabSwitcherPosition = TabSwitcherPosition(rawValue: v) ?? .trailing
-                }
-                Text("Left places the switcher before the window title, next to the sidebar.")
-                    .settingsCaption()
+                .disabled(!showToolbar)
             }
         }
         .formStyle(.grouped)

@@ -552,11 +552,28 @@ final class Pane: Identifiable {
     private var agentIconPID: pid_t?
 
     let searchState = TerminalSearchState()
+    /// Temporary full-pane fill used when a TUI owns this leaf's background in
+    /// a split. It is presentation-only, never persisted, and intentionally a
+    /// CGColor so the model remains independent of AppKit and SwiftUI.
+    var adaptiveBackgroundColor: CGColor?
 
     /// The OSC 8 link URL under the mouse, for the pane's hover banner
     /// (`GHOSTTY_ACTION_MOUSE_OVER_LINK`). Live UI state only — never
     /// persisted.
     var hoverURL: String?
+
+    /// Bumped when the pane's scroll view finds itself orphaned with no
+    /// living container to heal into (#227 — SwiftUI can deallocate a
+    /// transient container outright, killing the weak re-attach pointer).
+    /// `TerminalPane` reads this, so a bump re-renders the pane's subtree and
+    /// `TerminalSurface.updateNSView` re-attaches on a container SwiftUI
+    /// guarantees is alive. The owner-of-last-resort for view attachment.
+    var surfaceReattachTick = 0
+
+    func requestSurfaceReattach() {
+        surfaceReattachTick &+= 1
+    }
+
     var executionState: TerminalExecutionState = .idle {
         didSet {
             guard executionState != oldValue else { return }
@@ -940,6 +957,7 @@ final class Pane: Identifiable {
         var mergedEnv = env ?? [:]
         mergedEnv[ControlProtocol.sessionEnvVar] = sessionName
         let view = GhosttyTerminalNSView(
+            paneID: id,
             workingDirectory: projectPath,
             sessionName: sessionName,
             command: command,
@@ -953,6 +971,37 @@ final class Pane: Identifiable {
     }
 
     var nsView: GhosttyTerminalNSView? { _nsView }
+
+    /// Whether closing this pane must be confirmed first because a foreground
+    /// program is running. This is the single signal every busy-close guard
+    /// reads (pane/tab close, project unload/remove, the CLI's `busy` error,
+    /// the quit dialog rows).
+    ///
+    /// Local panes read libghostty's own signal (`needsConfirmQuit`). A remote
+    /// pane can't: its local process is the `ssh` client, which libghostty
+    /// counts as a running program forever — an idle remote prompt would
+    /// always warn. Busyness is instead derived from the remote-side signals
+    /// we do have (`remoteNeedsConfirmClose`); only when neither has produced
+    /// a verdict yet does it fall back to the conservative surface reading.
+    var needsConfirmClose: Bool {
+        guard let view = nsView else { return false }
+        guard isRemote else { return view.needsConfirmQuit() }
+        return remoteNeedsConfirmClose ?? view.needsConfirmQuit()
+    }
+
+    /// The remote-side busy verdict: the OSC 133/heartbeat execution state
+    /// (catches a command mid-output even before a probe lands), else the
+    /// probe-derived foreground name — a shell at its prompt is idle, anything
+    /// else is a running program. nil when no probe result has ever arrived
+    /// (unreachable host, BatchMode auth failure, the first ~3s), so the
+    /// caller can fall back rather than silently kill an unknown foreground.
+    /// Split from `needsConfirmClose` so unit tests can exercise the decision
+    /// without a live NSView.
+    var remoteNeedsConfirmClose: Bool? {
+        if executionState == .running { return true }
+        guard let name = foregroundProcessName, !name.isEmpty else { return nil }
+        return !ProcessInspector.isShellProcessName(name)
+    }
 
     /// The `NSScrollView` that hosts this pane's surface and renders the native
     /// overlay scrollbar. Owned here (not by SwiftUI) for the same reason as
@@ -990,6 +1039,9 @@ final class Pane: Identifiable {
         view.onCommandFinished = nil
         view.onProgressStarted = nil
         view.onProgressFinished = nil
+        view.onTerminalRender = nil
+        view.onBackgroundColorChange = nil
+        view.onAdaptiveBackgroundChange = nil
         view.onOutputActivity = nil
         view.onScrollbarUpdate = nil
         view.onScrollWheel = nil
@@ -1003,6 +1055,10 @@ final class Pane: Identifiable {
         view.passwordInput = false
         view.destroySurface()
         let scroll = _scrollView
+        // Disarm the orphan-healing re-attach BEFORE the removal below —
+        // otherwise a destroyed pane would climb back into its old container.
+        scroll?.reattachHost = nil
+        scroll?.onOrphaned = nil
         _scrollView = nil
         _nsView = nil
         // Keep the NSView (and its scroll-view host) alive for a runloop tick so
@@ -1229,21 +1285,34 @@ extension SplitNode {
         direction: SplitDirection,
         position: SplitPosition
     ) -> (node: SplitNode, inserted: Bool) {
+        inserting(node: .pane(pane), at: destinationID, direction: direction, position: position)
+    }
+
+    /// Insert a whole subtree next to the pane `destinationID`, wrapping the
+    /// destination in a new split with `node` at `position`. Generalizes the
+    /// single-pane variant so a dragged tab's entire split tree can land beside
+    /// a pane in one structural move (its panes and surfaces reused as-is).
+    func inserting(
+        node: SplitNode,
+        at destinationID: UUID,
+        direction: SplitDirection,
+        position: SplitPosition
+    ) -> (node: SplitNode, inserted: Bool) {
         switch self {
         case let .pane(p) where p.id == destinationID:
-            let first: SplitNode = position == .first ? .pane(pane) : .pane(p)
-            let second: SplitNode = position == .first ? .pane(p) : .pane(pane)
+            let first: SplitNode = position == .first ? node : .pane(p)
+            let second: SplitNode = position == .first ? .pane(p) : node
             return (.split(SplitBranch(direction: direction, first: first, second: second)), true)
         case .pane:
             return (self, false)
         case let .split(branch):
             let (newFirst, ok1) = branch.first.inserting(
-                pane: pane, at: destinationID, direction: direction, position: position
+                node: node, at: destinationID, direction: direction, position: position
             )
             branch.first = newFirst
             if ok1 { return (.split(branch), true) }
             let (newSecond, ok2) = branch.second.inserting(
-                pane: pane, at: destinationID, direction: direction, position: position
+                node: node, at: destinationID, direction: direction, position: position
             )
             branch.second = newSecond
             return (.split(branch), ok2)
@@ -1360,8 +1429,9 @@ extension SplitNode {
 
     /// Number of "cells" this subtree contributes when laid out along the given
     /// direction. Same-direction descendants expand to their leaf count;
-    /// different-direction or leaf nodes count as a single cell.
-    private func tileUnits(along direction: SplitDirection) -> Int {
+    /// different-direction or leaf nodes count as a single cell. Also feeds
+    /// `TabDropPlacer`'s preview widths (#227).
+    func tileUnits(along direction: SplitDirection) -> Int {
         switch self {
         case .pane: 1
         case let .split(b):

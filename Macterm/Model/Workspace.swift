@@ -43,6 +43,18 @@ final class TerminalTab: Identifiable {
 
     var sidebarTitle: String { customTitle ?? autoTitle }
 
+    /// The sidebar row's single-tab title (#227): a rename always wins, and an
+    /// unrenamed split of four or more panes is too dense to enumerate — its
+    /// row just counts them. Smaller splits render per-pane containers in the
+    /// sidebar, so this only surfaces for the single-tab row shapes.
+    var sidebarRowTitle: String {
+        if customTitle == nil {
+            let paneCount = splitRoot.allPanes().count
+            if paneCount >= 4 { return "\(paneCount) panes" }
+        }
+        return sidebarTitle
+    }
+
     /// The AI-agent logo for this tab's sidebar row: the focused pane's
     /// running agent, else the first pane running one. nil when no pane has
     /// an agent in the foreground (the user's chosen tab icon shows instead).
@@ -209,26 +221,79 @@ final class TerminalTab: Identifiable {
         splitRoot.settingRatio(paneID: paneID, axis: axis, ratio: ratio)
     }
 
-    /// Move a pane next to another pane (drag-and-drop reorganization):
-    /// detach it from its current spot — the tree collapses around it — and
-    /// split the destination, placing the moved pane on the `zone` side. The
-    /// `Pane` object is reused as-is, so its surface and shell are untouched.
-    /// Returns false (tree unchanged) for a self-drop, a pane the tree doesn't
-    /// contain, or the only pane in the tab.
+    /// Move a pane next to another pane — the legacy grab-handle drop shape,
+    /// now a thin alias for the target-based move below.
     @discardableResult
     func movePane(_ paneID: UUID, onto destinationID: UUID, zone: PaneDropZone) -> Bool {
-        guard paneID != destinationID,
-              let pane = splitRoot.findPane(id: paneID),
-              splitRoot.findPane(id: destinationID) != nil,
+        movePane(paneID, to: .pane(destinationID, zone))
+    }
+
+    /// Move a pane to a resolved drop target (grab-handle drag): detach it —
+    /// the tree collapses around it — and merge its single-pane tree back in
+    /// through `mergeTree`, so pane drags share the exact placement code (and
+    /// grammar: whole-edge, divider, local) of a sidebar tab drop. The `Pane`
+    /// object is reused as-is; surface and shell are untouched. Returns false
+    /// (tree unchanged) for a target aimed at the moved pane itself, a pane
+    /// the tree doesn't contain, or the only pane in the tab.
+    @discardableResult
+    func movePane(_ paneID: UUID, to target: TabDropResolution.Target) -> Bool {
+        switch target {
+        case let .pane(destinationID, _),
+             let .divider(destinationID, _):
+            guard destinationID != paneID else { return false }
+        case .rootEdge:
+            break
+        }
+        guard let pane = splitRoot.findPane(id: paneID),
               let detached = splitRoot.removing(paneID: paneID)
         else { return false }
-        let (newRoot, inserted) = detached.inserting(
-            pane: pane, at: destinationID, direction: zone.splitDirection, position: zone.splitPosition
+        let original = splitRoot
+        splitRoot = detached
+        guard mergeTree(.pane(pane), at: target) else {
+            splitRoot = original
+            return false
+        }
+        return true
+    }
+
+    /// Merge another tab's split tree at a resolved workspace drop target
+    /// (#227). Local pane drops keep the halving behavior of a normal split;
+    /// divider and root-edge drops ALWAYS equalize the tree, because their
+    /// meaning is positional parity — three side-by-side panes reading as
+    /// thirds, a whole-edge pane taking its even share.
+    @discardableResult
+    func mergeTree(_ node: SplitNode, at target: TabDropResolution.Target) -> Bool {
+        switch target {
+        case let .pane(paneID, zone):
+            return insertTree(node, at: paneID, zone: zone)
+        case let .divider(paneID, zone):
+            guard insertTree(node, at: paneID, zone: zone) else { return false }
+            splitRoot.rebalanced()
+            return true
+        case let .rootEdge(zone):
+            let first: SplitNode = zone.splitPosition == .first ? node : splitRoot
+            let second: SplitNode = zone.splitPosition == .first ? splitRoot : node
+            splitRoot = .split(SplitBranch(direction: zone.splitDirection, first: first, second: second))
+            zoomedPaneID = nil
+            if let paneID = node.allPanes().first?.id { focusPane(paneID) }
+            splitRoot.rebalanced()
+            return true
+        }
+    }
+
+    /// Merge another tab's split tree next to one of this tab's panes (#227 —
+    /// dragging a sidebar tab into the workspace): the destination pane is
+    /// wrapped in a new split with the adopted tree on the `zone` side.
+    /// Returns false (tree unchanged) when the pane isn't in this tab.
+    @discardableResult
+    func insertTree(_ node: SplitNode, at destinationPaneID: UUID, zone: PaneDropZone) -> Bool {
+        let (newRoot, inserted) = splitRoot.inserting(
+            node: node, at: destinationPaneID, direction: zone.splitDirection, position: zone.splitPosition
         )
         guard inserted else { return false }
         splitRoot = newRoot
         zoomedPaneID = nil
-        focusPane(paneID)
+        if let paneID = node.allPanes().first?.id { focusPane(paneID) }
         if Preferences.shared.autoTilingEnabled { splitRoot.rebalanced() }
         return true
     }

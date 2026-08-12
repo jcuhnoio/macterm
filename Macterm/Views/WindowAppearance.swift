@@ -21,6 +21,18 @@ extension NSView {
         return nil
     }
 
+    /// Every descendant whose class name matches `name` — for private views
+    /// that can exist once per scroll view (e.g. `NSScrollPocket`), where
+    /// hiding only the first would leave the rest in place.
+    func forEachDescendant(withClassName name: String, _ body: (NSView) -> Void) {
+        for subview in subviews {
+            if String(describing: type(of: subview)) == name {
+                body(subview)
+            }
+            subview.forEachDescendant(withClassName: name, body)
+        }
+    }
+
     /// First `NSSplitView` at or below this view. Callers sit beside the split
     /// view (a `.background` probe, the window's content view), so the search
     /// runs down from wherever the caller stands.
@@ -48,15 +60,6 @@ extension NSView {
 // MARK: - Color helpers (for the inactive-glass tint)
 
 extension NSColor {
-    /// Perceptual luminance in 0...1, computed in sRGB. Returns 0 for colors
-    /// that can't be converted to an RGB space (e.g. pattern colors).
-    var luminance: CGFloat {
-        guard let rgb = usingColorSpace(.sRGB) else { return 0 }
-        return 0.2126 * rgb.redComponent + 0.7152 * rgb.greenComponent + 0.0722 * rgb.blueComponent
-    }
-
-    var isLightColor: Bool { luminance > 0.5 }
-
     /// Returns a copy with its HSB saturation multiplied by `factor` (clamped
     /// to 0...1). Used to make the inactive-window overlay read as a desaturated
     /// version of the terminal background, matching Ghostty.
@@ -198,7 +201,7 @@ final class MactermGlassView: NSView {
     /// A saturation-boosted tint + opacity for the inactive overlay, lifted
     /// from Ghostty's `tintProperties`.
     private func tintProperties(for color: NSColor) -> (color: NSColor, opacity: CGFloat) {
-        let isLight = color.isLightColor
+        let isLight = color.prefersDarkForeground
         let vibrant = color.adjustingSaturation(by: 1.2)
         let overlayOpacity: CGFloat = isLight ? 0.35 : 0.85
         return (vibrant, overlayOpacity)
@@ -227,7 +230,7 @@ enum WindowAppearance {
     static func sync(window: NSWindow) {
         let opacity = Preferences.shared.windowOpacity
         let blurRadius = Preferences.shared.windowBlurRadius
-        let bg = GhosttyApp.shared.backgroundColor
+        let bg = MactermTheme.nsBg
         let isTransparent = opacity < 1.0
 
         // Native fullscreen draws its own opaque grey background; widgets show
@@ -332,7 +335,7 @@ enum WindowAppearance {
         guard glassSupported else { return }
         if #available(macOS 26.0, *) {
             guard let glass = existingGlass(in: window) else { return }
-            glass.updateKeyStatus(window.isKeyWindow, backgroundColor: GhosttyApp.shared.backgroundColor)
+            glass.updateKeyStatus(window.isKeyWindow, backgroundColor: MactermTheme.nsBg)
         }
     }
 
@@ -420,8 +423,66 @@ enum WindowAppearance {
         return window.value(forKey: "_cornerRadius") as? CGFloat
     }
 
+    /// Apply the Hide Title Bar option (#226) to the window: hide the titlebar
+    /// container, and disable click-dragging while the option is on.
+    ///
+    /// Hiding the window toolbar collapses the visible chrome, but two drag
+    /// paths survive it. The collapsed titlebar container still tracks its old
+    /// rect and swallows events over an invisible strip — hiding the container
+    /// (as Ghostty's hidden titlebar style does) lets those reach the content.
+    /// Even then, a `.fullSizeContentView` window keeps a titlebar-height drag
+    /// band (the area above `contentLayoutRect`) that moves the window from any
+    /// hit view answering `mouseDownCanMoveWindow` — Ghostty removes it by
+    /// overriding `contentLayoutRect` on its NSWindow subclass, but SwiftUI
+    /// owns our window class, so the public equivalent is `isMovable = false`:
+    /// no user drags anywhere while hidden (programmatic moves, including
+    /// window managers driving Accessibility, still work). Runs on every
+    /// `sync` so AppKit rebuilding the titlebar subviews (becomeMain,
+    /// fullscreen transitions) re-asserts it; `WindowStyler.updateNSView`
+    /// calls it directly for live setting flips.
+    static func syncTitleBarHidden(window: NSWindow) {
+        let hidden = Preferences.shared.hideTitleBar
+        titlebarContainer(in: window)?.isHidden = hidden
+        window.isMovable = !hidden
+        // SwiftUI's `.toolbar(.hidden, for: .windowToolbar)` collapses the
+        // windowed titlebar but keeps the NSToolbar object on the window, and
+        // in native fullscreen AppKit creates a 52pt NSToolbarFullScreenWindow
+        // overlay for any window that owns a toolbar — an empty bar pinned to
+        // the top of the fullscreen space. Toggling the toolbar's own
+        // visibility removes the overlay; symmetric so leaving the mode (or
+        // flipping the setting mid-fullscreen) restores it.
+        window.toolbar?.isVisible = !hidden
+        // Even toolbar-less, the overlay hosts a bare titlebar that the system
+        // slides down alongside the menu bar when the pointer pushes past the
+        // top of the fullscreen space, and its gray background is
+        // system-painted — it ignores `titlebarAppearsTransparent`. A plain
+        // `alphaValue = 0` did not survive either: the reveal animates the
+        // overlay's alpha back in (observed live — the bar returned
+        // translucent, mid-animation). So blank the window's whole view tree
+        // from the root: the slide can animate whatever alpha it likes over a
+        // window that renders nothing. The root survives the reveal's subview
+        // rebuilds, and every sync re-asserts anyway. The menu bar is a
+        // separate system window and still slides in for menu access.
+        if let overlay = fullscreenToolbarOverlay(for: window) {
+            overlay.alphaValue = hidden ? 0 : 1
+            let root = overlay.contentView?.superview ?? overlay.contentView
+            root?.isHidden = hidden
+        }
+        // The macOS 26+ scroll-edge-effect pocket: AppKit hosts it in the
+        // titlebar area (moved there on macOS 27, ghostty#13390) where it sits
+        // over the terminal's top rows and blocks clicks/selection once the
+        // chrome is gone. Hiding NSTitlebarBackgroundView doesn't cover it, so
+        // hide every pocket directly — one can exist per scroll view. On
+        // systems without the class the walk finds nothing.
+        window.contentView?.superview?.forEachDescendant(withClassName: "NSScrollPocket") {
+            $0.isHidden = hidden
+        }
+    }
+
     private static func syncTitlebar(window: NSWindow, isTransparent: Bool) {
         guard let container = titlebarContainer(in: window) else { return }
+
+        syncTitleBarHidden(window: window)
 
         if let titlebarView = container.firstDescendant(withClassName: "NSTitlebarView") {
             titlebarView.wantsLayer = true
@@ -442,10 +503,31 @@ enum WindowAppearance {
 
     private static func titlebarContainer(in window: NSWindow) -> NSView? {
         // The titlebar container lives on the window's content view's root in
-        // normal mode, and on a separate NSToolbarFullScreenWindow in native
-        // fullscreen. We don't support native fullscreen tab bars, so the
-        // first path suffices for Macterm.
-        guard let contentView = window.contentView else { return nil }
+        // normal mode. In native fullscreen AppKit hosts it in a separate
+        // NSToolbarFullScreenWindow parented to ours — without following that
+        // hop, a hidden toolbar left an empty bar pinned to the top of the
+        // fullscreen space (#226). Ghostty's TerminalWindow resolves it the
+        // same way; matching on `parent` picks the right overlay when several
+        // fullscreen windows exist.
+        guard window.styleMask.contains(.fullScreen) else {
+            return findTitlebarContainer(from: window.contentView)
+        }
+        return findTitlebarContainer(from: fullscreenToolbarOverlay(for: window)?.contentView)
+    }
+
+    /// The NSToolbarFullScreenWindow AppKit parents to `window` in native
+    /// fullscreen; nil outside fullscreen or before the overlay exists.
+    private static func fullscreenToolbarOverlay(for window: NSWindow) -> NSWindow? {
+        guard window.styleMask.contains(.fullScreen) else { return nil }
+        return NSApp.windows.first {
+            $0.className == "NSToolbarFullScreenWindow" && $0.parent == window
+        }
+    }
+
+    /// Root-walk then search: the container is an ancestor sibling of the
+    /// content view, so the lookup climbs to the theme frame first.
+    private static func findTitlebarContainer(from contentView: NSView?) -> NSView? {
+        guard let contentView else { return nil }
         var root: NSView = contentView
         while let s = root.superview {
             root = s

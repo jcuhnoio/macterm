@@ -12,7 +12,7 @@ struct RemoteSpawnTests {
         // The remote side is `sh -c '<script>'` with a single-quote-free
         // script — the one form every login shell (bash/zsh/fish/nu)
         // tokenizes identically before POSIX sh takes over.
-        let cmd = try? #require(RemoteSpawn.paneCommand(remote: remote, sessionName: "macterm-api-abc123"))
+        let cmd = RemoteSpawn.paneCommand(remote: remote, sessionName: "macterm-api-abc123")
         // Missing zmx / bad cwd must NOT close the pane — they drop into a
         // login shell with a diagnostic instead of exiting.
         #expect(cmd?.contains("command -v zmx") == true)
@@ -28,9 +28,9 @@ struct RemoteSpawnTests {
     func pane_command_with_explicit_zmx_path_skips_the_presence_guard() {
         // An explicit path is used verbatim and needs no `command -v` guard —
         // its own failure surfaces as zmx's error, still visible in the pane.
-        let cmd = try? #require(RemoteSpawn.paneCommand(
+        let cmd = RemoteSpawn.paneCommand(
             remote: remote, sessionName: "macterm-api-abc123", zmxPath: "~/bin/zmx"
-        ))
+        )
         #expect(cmd?.contains("command -v zmx") == false)
         #expect(cmd?.contains("exec \"~/bin/zmx\" attach \"macterm-api-abc123\"") == true)
     }
@@ -118,7 +118,7 @@ struct RemoteSpawnTests {
 
     @Test
     func probe_argv_is_noninteractive_and_carries_the_script() {
-        let argv = try? #require(RemoteSpawn.foregroundProbeArgv(remote: remote))
+        let argv = RemoteSpawn.foregroundProbeArgv(remote: remote)
         #expect(argv?.prefix(4) == ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"])
         #expect(argv?.dropFirst(4).first == "devbox")
         let expectedScript = RemoteSpawn.remoteEnvPreamble
@@ -236,7 +236,7 @@ struct RemoteSpawnTests {
         // End-to-end: a `'` in the remote directory must not survive into the
         // shipped `sh -c '<script>'` (its `'` would break the outer quoting).
         let remoteWithQuote = ProjectPath.remote(user: nil, host: "devbox", directory: "~/it's")
-        let cmd = try? #require(RemoteSpawn.paneCommand(remote: remoteWithQuote, sessionName: "macterm-x-abc123"))
+        let cmd = RemoteSpawn.paneCommand(remote: remoteWithQuote, sessionName: "macterm-x-abc123")
         // The script body (between the outer single quotes) carries no attach —
         // it was replaced by the quote-free diagnostic.
         #expect(cmd?.contains("unsupported single quote") == true)

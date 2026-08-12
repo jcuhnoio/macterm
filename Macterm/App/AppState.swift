@@ -4,6 +4,40 @@ import os
 
 private let logger = Logger(subsystem: appBundleID, category: "AppState")
 
+/// Thread-safe ownership for block-based notification observers. `AppState`
+/// installs observers on the main actor, while Swift deinitializers are
+/// nonisolated; keeping the non-Sendable tokens behind this lock lets teardown
+/// drain them without unsafe actor annotations on observable state.
+private final class ObserverTokenStore: @unchecked Sendable {
+    private typealias Entry = (center: NotificationCenter, token: NSObjectProtocol)
+
+    private let lock = NSLock()
+    private var entries: [Entry] = []
+
+    func append(center: NotificationCenter, token: NSObjectProtocol) {
+        lock.lock()
+        defer { lock.unlock() }
+        entries.append((center, token))
+    }
+
+    func append(contentsOf newEntries: [(center: NotificationCenter, token: NSObjectProtocol)]) {
+        lock.lock()
+        defer { lock.unlock() }
+        entries.append(contentsOf: newEntries)
+    }
+
+    func removeAllObservers() {
+        lock.lock()
+        let drained = entries
+        entries.removeAll()
+        lock.unlock()
+
+        for entry in drained {
+            entry.center.removeObserver(entry.token)
+        }
+    }
+}
+
 @MainActor @Observable
 final class AppState {
     var activeProjectID: UUID? {
@@ -167,11 +201,8 @@ final class AppState {
     private var pollEventObservers: [Any] = []
 
     /// Every block-based observer token paired with the center it was added to,
-    /// so `deinit` can remove them from the correct center. `nonisolated(unsafe)`
-    /// so the nonisolated deinit can read it — the object is being destroyed, so
-    /// there is no concurrent access. Tokens are `NSObjectProtocol` (what
-    /// `addObserver(forName:…)` returns).
-    nonisolated(unsafe) private var observerTokens: [(center: NotificationCenter, token: NSObjectProtocol)] = []
+    /// so `deinit` can remove them from the correct center.
+    private let observerTokens = ObserverTokenStore()
 
     /// Injectable for tests (`PollCadence.Context` inputs). `NSApp` is nil
     /// while the SwiftUI `App` struct (and thus AppState) is constructed —
@@ -239,7 +270,7 @@ final class AppState {
             MainActor.assumeIsolated { self?.rebalanceAllWorkspacesIfEnabled() }
         }
         autoTileObserver = autoTileToken
-        observerTokens.append((NotificationCenter.default, autoTileToken))
+        observerTokens.append(center: NotificationCenter.default, token: autoTileToken)
         let restored = (Preferences.defaults.stringArray(forKey: recencyKey) ?? [])
             .compactMap { UUID(uuidString: $0) }
         projectRecency = RecencyStack<UUID>(limit: 50, items: restored)
@@ -298,12 +329,9 @@ final class AppState {
         // Production runs one app-lifetime instance, but tests build fresh
         // AppStates — without this, their observers accumulate on the shared
         // centers and dead instances' blocks keep firing into a nil weak self.
-        // Only nonisolated-safe calls here (observerTokens is nonisolated).
         // The poll timer self-cleans: it's non-repeating with a `[weak self]`
         // closure, so a dead instance's timer fires once into nil and stops.
-        for entry in observerTokens {
-            entry.center.removeObserver(entry.token)
-        }
+        observerTokens.removeAllObservers()
     }
 
     // MARK: - Poll scheduling
@@ -715,7 +743,7 @@ final class AppState {
     func requestUnloadProject(_ projectID: UUID) {
         let busy = workspaces[projectID]?.tabs
             .flatMap { $0.splitRoot.allPanes() }
-            .contains { $0.nsView?.needsConfirmQuit() == true } ?? false
+            .contains(where: \.needsConfirmClose) ?? false
         if busy {
             pendingUnloadProject = PendingUnloadProject(projectID: projectID)
             return
@@ -739,7 +767,7 @@ final class AppState {
     func requestRemoveProject(_ projectID: UUID, removal: @escaping () -> Void) {
         let busy = workspaces[projectID]?.tabs
             .flatMap { $0.splitRoot.allPanes() }
-            .contains { $0.nsView?.needsConfirmQuit() == true } ?? false
+            .contains(where: \.needsConfirmClose) ?? false
         if busy {
             pendingRemoveProject = PendingRemoveProject(projectID: projectID, completeRemoval: removal)
             return
@@ -799,14 +827,14 @@ final class AppState {
         for id in projectIDs {
             let busy = workspaces[id]?.tabs
                 .flatMap { $0.splitRoot.allPanes() }
-                .contains { $0.nsView?.needsConfirmQuit() == true } ?? false
+                .contains(where: \.needsConfirmClose) ?? false
             if busy { return true }
         }
         for tab in tabs {
             let busy = workspaces[tab.projectID]?.tabs
                 .first { $0.id == tab.tabID }?
                 .splitRoot.allPanes()
-                .contains { $0.nsView?.needsConfirmQuit() == true } ?? false
+                .contains(where: \.needsConfirmClose) ?? false
             if busy { return true }
         }
         return false
@@ -871,7 +899,7 @@ final class AppState {
     func requestCloseTab(_ tabID: UUID, projectID: UUID) {
         let tab = workspaces[projectID]?.tabs.first { $0.id == tabID }
         let busy = tab?.splitRoot.allPanes()
-            .contains { $0.nsView?.needsConfirmQuit() == true } ?? false
+            .contains(where: \.needsConfirmClose) ?? false
         if busy {
             pendingCloseTab = PendingCloseTab(tabID: tabID, projectID: projectID)
             return
@@ -934,6 +962,138 @@ final class AppState {
         activeProjectID = destProjectID
         recordProjectVisit(destProjectID)
         saveWorkspaces()
+    }
+
+    /// Merge a tab into the destination project's ACTIVE tab at a resolved
+    /// workspace drop target (#227 — dragging a sidebar tab into the
+    /// workspace, where the cursor picks a level: whole-edge, divider, or
+    /// local pane split). No-op when the active tab IS the dragged tab.
+    func mergeTab(
+        _ tabID: UUID,
+        from sourceProjectID: UUID,
+        at target: TabDropResolution.Target,
+        inProject destProjectID: UUID
+    ) {
+        guard let destTab = workspaces[destProjectID]?.activeTab,
+              destTab.id != tabID,
+              let sourceTab = detachTabForMerge(tabID, from: sourceProjectID, to: destProjectID)
+        else { return }
+        guard destTab.mergeTree(sourceTab.splitRoot, at: target) else {
+            // The target pane vanished mid-drag: put the detached tab back
+            // (identity restored) instead of losing its live shells.
+            if sourceProjectID != destProjectID {
+                for pane in sourceTab.splitRoot.allPanes() {
+                    pane.rebind(projectID: sourceProjectID)
+                }
+            }
+            workspaces[sourceProjectID]?.adoptTab(sourceTab)
+            saveWorkspaces()
+            return
+        }
+        finishMerge(intoTab: destTab.id, inProject: destProjectID)
+    }
+
+    /// Pull a tab out of its workspace for a merge, keeping its panes (and
+    /// their surfaces) alive, and restamp their routing identity when the merge
+    /// crosses projects — the same rebind `moveTab` does, for the same reason.
+    private func detachTabForMerge(_ tabID: UUID, from sourceProjectID: UUID, to destProjectID: UUID) -> TerminalTab? {
+        guard let source = workspaces[sourceProjectID],
+              let tab = source.tabs.first(where: { $0.id == tabID })
+        else { return nil }
+        source.closeTab(tabID)
+        if sourceProjectID != destProjectID {
+            for pane in tab.splitRoot.allPanes() {
+                pane.rebind(projectID: destProjectID)
+            }
+        }
+        return tab
+    }
+
+    /// Land the user on the merged tab, mirroring `moveTab`'s selection.
+    private func finishMerge(intoTab destTabID: UUID, inProject destProjectID: UUID) {
+        workspaces[destProjectID]?.selectTab(destTabID)
+        activeProjectID = destProjectID
+        recordProjectVisit(destProjectID)
+        saveWorkspaces()
+    }
+
+    /// Split a tab apart (#227 — "Separate Panes"): every pane after the first
+    /// (in tree order) moves into its own fresh tab inserted right after the
+    /// source tab, and the source keeps only its first pane. The `Pane`
+    /// objects are reused as-is, so surfaces and running shells survive.
+    /// No-op for a single-pane tab.
+    func separateTabPanes(_ tabID: UUID, projectID: UUID) {
+        guard let ws = workspaces[projectID],
+              let index = ws.tabs.firstIndex(where: { $0.id == tabID })
+        else { return }
+        let tab = ws.tabs[index]
+        let panes = tab.splitRoot.allPanes()
+        guard panes.count > 1, let firstPane = panes.first else { return }
+        logger.debug("separateTabPanes: \(tabID, privacy: .public) panes=\(panes.count, privacy: .public)")
+        tab.splitRoot = .pane(firstPane)
+        tab.zoomedPaneID = nil
+        tab.paneFocusHistory = RecencyStack(limit: 20)
+        tab.focusedPaneID = firstPane.id
+        for (offset, pane) in panes.dropFirst().enumerated() {
+            let newTab = TerminalTab(id: UUID(), splitRoot: .pane(pane), focusedPaneID: pane.id)
+            ws.tabs.insert(newTab, at: index + 1 + offset)
+        }
+        ws.selectTab(tabID)
+        saveWorkspaces()
+    }
+
+    /// Split a single pane out of its tab into its own fresh tab — the
+    /// per-pane sibling of `separateTabPanes` ("Separate Current Pane"). The
+    /// `Pane` object is reused as-is, so its surface and running shell
+    /// survive; the source tab keeps its remaining panes. `index` is the
+    /// slot in the destination project's tab list (nil appends). Crossing
+    /// projects rebinds the pane's routing identity, mirroring `moveTab`.
+    /// No-op when the pane isn't in any workspace or is its tab's only pane
+    /// (already its own tab).
+    func separatePane(_ paneID: UUID, toProject destProjectID: UUID, destPath: String, at index: Int? = nil) {
+        guard let (sourceProjectID, sourceTab) = locatePane(paneID),
+              sourceTab.splitRoot.allPanes().count > 1,
+              let pane = sourceTab.splitRoot.findPane(id: paneID)
+        else { return }
+        // Resolve the destination before detaching, so a failure can't leave
+        // the pane belonging to no tab.
+        ensureWorkspace(projectID: destProjectID, path: destPath)
+        guard let dest = workspaces[destProjectID],
+              let remaining = sourceTab.splitRoot.removing(paneID: paneID)
+        else { return }
+        logger.debug(
+            "separatePane: \(paneID, privacy: .public) to=\(destProjectID, privacy: .public) index=\(index ?? -1, privacy: .public)"
+        )
+        // Detach without destroying: the same tree/zoom/focus repair as
+        // `removePane`, minus the surface teardown — the pane lives on.
+        sourceTab.splitRoot = remaining
+        if sourceTab.zoomedPaneID == paneID { sourceTab.zoomedPaneID = nil }
+        sourceTab.paneFocusHistory.remove(paneID)
+        if sourceTab.focusedPaneID == paneID {
+            sourceTab.focusedPaneID = sourceTab.nextFocusAfterClose()
+        }
+        if Preferences.shared.autoTilingEnabled { sourceTab.splitRoot.rebalanced() }
+
+        if sourceProjectID != destProjectID {
+            pane.rebind(projectID: destProjectID)
+        }
+        let newTab = TerminalTab(id: UUID(), splitRoot: .pane(pane), focusedPaneID: pane.id)
+        dest.adoptTab(newTab, at: index)
+        activeProjectID = destProjectID
+        recordProjectVisit(destProjectID)
+        saveWorkspaces()
+    }
+
+    /// Find the workspace tab currently holding a pane. Scans every loaded
+    /// workspace — a sidebar pane drop only carries the pane's id, and the
+    /// quick terminal's ephemeral tab (not in `workspaces`) correctly misses.
+    private func locatePane(_ paneID: UUID) -> (projectID: UUID, tab: TerminalTab)? {
+        for (projectID, ws) in workspaces {
+            if let tab = ws.tabs.first(where: { $0.splitRoot.findPane(id: paneID) != nil }) {
+                return (projectID, tab)
+            }
+        }
+        return nil
     }
 
     /// Reorder a tab within its own project to an absolute drop index (the
@@ -1122,7 +1282,7 @@ final class AppState {
         let pane = workspaces[projectID]?.tabs
             .compactMap { $0.splitRoot.findPane(id: paneID) }
             .first
-        if pane?.nsView?.needsConfirmQuit() == true {
+        if pane?.needsConfirmClose == true {
             pendingClosePane = PendingClosePane(paneID: paneID, projectID: projectID)
             return
         }
@@ -1408,6 +1568,18 @@ final class AppState {
 
     func focusPane(_ paneID: UUID, projectID: UUID) {
         workspaces[projectID]?.activeTab?.focusPane(paneID)
+    }
+
+    /// Publish presentation-only renderer state through the workspace owner.
+    /// The color is transient and therefore does not trigger persistence.
+    func setAdaptiveBackgroundColor(_ color: CGColor?, paneID: UUID, projectID: UUID) {
+        guard let pane = workspaces[projectID]?.tabs
+            .lazy
+            .compactMap({ $0.splitRoot.findPane(id: paneID) })
+            .first,
+            pane.adaptiveBackgroundColor != color
+        else { return }
+        pane.adaptiveBackgroundColor = color
     }
 
     /// Begin the sidebar rename flow for the tab containing `paneID` — the

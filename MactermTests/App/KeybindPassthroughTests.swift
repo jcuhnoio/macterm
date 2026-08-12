@@ -182,11 +182,11 @@ struct KeybindPassthroughTests {
         defer { HotkeyRegistry.setShortcutString(HotkeyAction.focusPaneLeft.defaultShortcut, for: .focusPaneLeft) }
 
         // Flagged but bound elsewhere: the chord must not match it.
-        try withPassthrough(.focusPaneRight) {
+        withPassthrough(.focusPaneRight) {
             #expect(KeybindPassthrough.matchedAction(for: event) == nil)
         }
 
-        try withPassthrough(.focusPaneLeft) {
+        withPassthrough(.focusPaneLeft) {
             #expect(HotkeyRegistry.passthroughActions() == [.focusPaneLeft])
             #expect(KeybindPassthrough.matchedAction(for: event) == .focusPaneLeft)
         }

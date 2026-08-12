@@ -258,6 +258,174 @@ struct TerminalTabTests {
         #expect(try !tab.paneFocusHistory.items.contains(#require(ids["b"])))
     }
 
+    // MARK: - sidebarRowTitle (#227)
+
+    @Test
+    func sidebarRowTitle_four_or_more_panes_counts_them() {
+        let (tab, _) = makeTab(H(H(pane("a"), pane("b")), H(pane("c"), pane("d"))))
+        #expect(tab.sidebarRowTitle == "4 panes")
+    }
+
+    @Test
+    func sidebarRowTitle_rename_wins_over_pane_count() {
+        let (tab, _) = makeTab(H(H(pane("a"), pane("b")), H(pane("c"), pane("d"))))
+        tab.customTitle = "my workbench"
+        #expect(tab.sidebarRowTitle == "my workbench")
+        // Clearing the rename falls back to the count, not the pipe list.
+        tab.customTitle = nil
+        #expect(tab.sidebarRowTitle == "4 panes")
+    }
+
+    @Test
+    func sidebarRowTitle_below_four_panes_keeps_normal_title() {
+        let (tab, _) = makeTab(H(pane("a"), H(pane("b"), pane("c"))))
+        #expect(tab.sidebarRowTitle == tab.sidebarTitle)
+    }
+
+    // MARK: - insertTree (#227)
+
+    @Test
+    func insertTree_wraps_destination_pane_in_zone_split() throws {
+        let (tab, ids) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let (incoming, incomingIDs) = build(pane("x"))
+        let ok = try tab.insertTree(incoming, at: #require(ids["b"]), zone: .top)
+        #expect(ok)
+        #expect(tab.splitRoot.allPanes().map(\.id) == [ids["a"], incomingIDs["x"], ids["b"]])
+        #expect(tab.focusedPaneID == incomingIDs["x"])
+    }
+
+    @Test
+    func insertTree_unknown_pane_leaves_tree_unchanged() {
+        let (tab, _) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let (incoming, _) = build(pane("x"))
+        let ok = tab.insertTree(incoming, at: UUID(), zone: .left)
+        #expect(!ok)
+        #expect(tab.splitRoot.allPanes().count == 2)
+    }
+
+    // MARK: - mergeTree (#227 workspace drops)
+
+    @Test
+    func mergeTree_rootEdge_bottom_takes_the_full_width_half() throws {
+        let (tab, _) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let (incoming, incomingIDs) = build(pane("x"))
+        #expect(tab.mergeTree(incoming, at: .rootEdge(.bottom)))
+        let xID = try #require(incomingIDs["x"])
+        let frame = try #require(tab.splitRoot.paneFrames()[xID])
+        #expect(abs(frame.width - 1) < 0.001)
+        #expect(abs(frame.height - 0.5) < 0.001)
+        #expect(abs(frame.minY - 0.5) < 0.001)
+        #expect(tab.focusedPaneID == xID)
+    }
+
+    @Test
+    func mergeTree_rootEdge_left_equalizes_to_thirds() throws {
+        let (tab, _) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let (incoming, incomingIDs) = build(pane("x"))
+        #expect(tab.mergeTree(incoming, at: .rootEdge(.left)))
+        let frames = tab.splitRoot.paneFrames()
+        for frame in frames.values {
+            #expect(abs(frame.width - 1.0 / 3.0) < 0.001)
+        }
+        let xID = try #require(incomingIDs["x"])
+        #expect(try abs(#require(frames[xID]).minX) < 0.001)
+    }
+
+    @Test
+    func mergeTree_divider_equalizes_to_thirds() throws {
+        let (tab, ids) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let (incoming, incomingIDs) = build(pane("x"))
+        #expect(try tab.mergeTree(incoming, at: .divider(#require(ids["b"]), .left)))
+        let frames = tab.splitRoot.paneFrames()
+        #expect(frames.count == 3)
+        for frame in frames.values {
+            #expect(abs(frame.width - 1.0 / 3.0) < 0.001)
+        }
+        // The new pane sits in the middle column, where the divider was.
+        let xID = try #require(incomingIDs["x"])
+        #expect(try abs(#require(frames[xID]).minX - 1.0 / 3.0) < 0.001)
+    }
+
+    @Test
+    func mergeTree_pane_target_halves_the_pane() throws {
+        Preferences.shared.autoTilingEnabled = false
+        let (tab, ids) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let (incoming, incomingIDs) = build(pane("x"))
+        #expect(try tab.mergeTree(incoming, at: .pane(#require(ids["a"]), .left)))
+        // 1/4 + 1/4 + 1/2: a local split never disturbs the sibling column.
+        let frames = tab.splitRoot.paneFrames()
+        let xID = try #require(incomingIDs["x"])
+        let bID = try #require(ids["b"])
+        #expect(try abs(#require(frames[xID]).width - 0.25) < 0.001)
+        #expect(try abs(#require(frames[bID]).width - 0.5) < 0.001)
+    }
+
+    @Test
+    func mergeTree_unknown_pane_fails_without_reshaping() {
+        let (tab, _) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let (incoming, _) = build(pane("x"))
+        #expect(!tab.mergeTree(incoming, at: .pane(UUID(), .left)))
+        #expect(tab.splitRoot.allPanes().count == 2)
+    }
+
+    // MARK: - movePane(to:) — the grab handle shares the tab-drop grammar
+
+    @Test
+    func movePane_to_rootEdge_takes_the_whole_edge() throws {
+        let (tab, ids) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let aID = try #require(ids["a"])
+        #expect(tab.movePane(aID, to: .rootEdge(.bottom)))
+        let frame = try #require(tab.splitRoot.paneFrames()[aID])
+        #expect(abs(frame.width - 1) < 0.001)
+        #expect(abs(frame.minY - 0.5) < 0.001)
+        #expect(tab.focusedPaneID == aID)
+    }
+
+    @Test
+    func movePane_to_divider_equalizes() throws {
+        let (tab, ids) = makeTab(H(pane("a"), H(pane("b"), pane("c"))), focused: "a")
+        let aID = try #require(ids["a"])
+        #expect(try tab.movePane(aID, to: .divider(#require(ids["c"]), .right)))
+        // a detaches from the left, lands after c; three equal columns.
+        let frames = tab.splitRoot.paneFrames()
+        for frame in frames.values {
+            #expect(abs(frame.width - 1.0 / 3.0) < 0.001)
+        }
+        #expect(try abs(#require(frames[aID]).minX - 2.0 / 3.0) < 0.001)
+    }
+
+    @Test
+    func movePane_moves_without_duplicating_or_losing_panes() throws {
+        // Reordering is detach-then-merge: the moved pane must vanish from
+        // its old spot (the tree collapses around it) and every other pane
+        // must survive exactly once.
+        let (tab, ids) = makeTab(H(pane("a"), V(pane("b"), pane("c"))), focused: "a")
+        let before = Set(tab.splitRoot.allPanes().map(\.id))
+        let cID = try #require(ids["c"])
+        #expect(try tab.movePane(cID, to: .pane(#require(ids["a"]), .top)))
+        let after = tab.splitRoot.allPanes().map(\.id)
+        #expect(Set(after) == before)
+        #expect(after.count == 3)
+        // c left the right column (which collapsed to just b) and now sits
+        // above a.
+        #expect(after == [ids["c"], ids["a"], ids["b"]].compactMap(\.self))
+    }
+
+    @Test
+    func movePane_to_target_at_itself_is_noop() throws {
+        let (tab, ids) = makeTab(H(pane("a"), pane("b")), focused: "a")
+        let aID = try #require(ids["a"])
+        #expect(!tab.movePane(aID, to: .pane(aID, .left)))
+        #expect(!tab.movePane(aID, to: .divider(aID, .right)))
+        #expect(tab.splitRoot.allPanes().count == 2)
+    }
+
+    @Test
+    func movePane_to_rootEdge_with_only_pane_is_noop() throws {
+        let (tab, ids) = makeTab(pane("a"), focused: "a")
+        #expect(try !tab.movePane(#require(ids["a"]), to: .rootEdge(.left)))
+    }
+
     // MARK: - movePane
 
     @Test

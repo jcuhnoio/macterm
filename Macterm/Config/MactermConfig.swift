@@ -4,14 +4,12 @@ import os
 private let logger = Logger(subsystem: appBundleID, category: "MactermConfig")
 
 /// Generates the two ghostty config files Macterm wraps around the user's
-/// own Ghostty config. The user is the source of truth for every Ghostty
-/// setting; Macterm provides first-launch defaults that the user overrides,
-/// and a minimal must-win overrides file for keys Macterm can't let the
-/// renderer control (background-opacity and background-blur — both required
-/// for the window-level translucency in `WindowAppearance` — plus, when the
-/// external ghostty CLI is missing, a shell-integration-features line that
-/// merges the user's own value with the features Macterm must disable; see
-/// `ShellIntegrationFeatures`).
+/// own Ghostty config. The user is normally the source of truth for every
+/// Ghostty setting; Macterm provides first-launch defaults that the user
+/// overrides, and a minimal must-win overrides file for keys Macterm needs to
+/// control. That includes background opacity/blur, compatibility fixes, and
+/// the terminal background only when the user explicitly selects Macterm's
+/// custom-color mode in Settings.
 ///
 /// `GhosttyApp.loadConfig` loads them in this order:
 ///   defaults → user's Ghostty config → overrides
