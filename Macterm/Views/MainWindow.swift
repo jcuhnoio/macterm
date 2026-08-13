@@ -161,7 +161,18 @@ struct MainWindow: View {
             // what's on screen — desynced, it needed two presses to re-hide.
             // A peek is the exception: the column shows while the user's
             // toggle state stays hidden.
-            guard !isPeeking else { return }
+            if isPeeking {
+                // The toolbar button honors the sidebar's real configuration
+                // (hidden), not the peeked column it happens to see — so its
+                // collapse means "show": pin the sidebar instead of letting
+                // it vanish. Our own unpeek can't land here (`endPeek` drops
+                // the flag before collapsing).
+                if visibility == .detailOnly {
+                    isPeeking = false
+                    appState.sidebarVisible = true
+                }
+                return
+            }
             let visible = visibility != .detailOnly
             if appState.sidebarVisible != visible {
                 appState.sidebarVisible = visible
