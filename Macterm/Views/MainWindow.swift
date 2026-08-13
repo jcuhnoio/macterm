@@ -26,10 +26,22 @@ struct MainWindow: View {
     /// once the pointer leaves the trigger strip.
     @State
     private var suppressPeekUntilExit = false
-    /// Last open sidebar width, read-only mirror for the peek's "pointer left
-    /// the sidebar" threshold — the reopen width itself stays SwiftUI's.
+    /// Last settled open sidebar width: the peek's "pointer left the sidebar"
+    /// threshold, and the column's `ideal` width. Feeding it back as `ideal`
+    /// is what preserves a dragged width across collapse/expand cycles —
+    /// SwiftUI forgets its own column metric after repeated hide/peek rounds
+    /// and reverts to whatever `ideal` says.
     @State
     private var sidebarWidth: CGFloat = 180
+    /// Debounce stage for `sidebarWidth`: raw geometry, committed only after
+    /// it holds still (`sidebarWidthSettleDelay`). Collapse/expand animations
+    /// stream intermediate widths, and with `sidebarWidth` driving `ideal`, an
+    /// interrupted animation's frame would otherwise become the width the
+    /// sidebar reopens at.
+    @State
+    private var sidebarWidthCandidate: CGFloat = 180
+
+    private let sidebarWidthSettleDelay: Duration = .milliseconds(300)
 
     /// Width of the hover strip at the leading edge that pops the hidden
     /// sidebar out — a little wider than AppKit's own edge-hover band.
@@ -53,13 +65,19 @@ struct MainWindow: View {
                 // Innermost, before `ignoresSafeArea`, so the padding insets
                 // the rows while the sidebar surface still reaches the edge.
                 .safeAreaPadding(.top, chromeHidden ? 8 : 0)
-                .navigationSplitViewColumnWidth(min: 140, ideal: 180, max: 280)
+                .navigationSplitViewColumnWidth(min: 140, ideal: sidebarWidth, max: 280)
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.size.width
                 } action: { width in
-                    // Below the column's 140 minimum means mid-collapse; keep
-                    // the last open width for the peek's exit threshold.
-                    if width >= 100 { sidebarWidth = width }
+                    // Below the column's 140 minimum means mid-collapse.
+                    if width >= 100 { sidebarWidthCandidate = width }
+                }
+                .task(id: sidebarWidthCandidate) {
+                    // Restarted on every geometry change, so the candidate
+                    // commits only once the width has held still — a drag
+                    // settling, never an animation frame.
+                    guard await (try? Task.sleep(for: sidebarWidthSettleDelay)) != nil else { return }
+                    sidebarWidth = sidebarWidthCandidate
                 }
                 // Hiding the toolbar removes the chrome but SwiftUI keeps its
                 // titlebar safe-area inset reserved; ignoring it is what lets
