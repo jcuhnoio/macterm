@@ -186,7 +186,22 @@ elif [ "$MAJOR" -ge 26 ]; then
   icon="$(find "$ICONS" -name '*.png' | head -1)"
   size="$(sips -g pixelWidth -g pixelHeight "$icon" | awk '/pixel/ { print $2 }' | paste -sd x -)"
   [ "$size" = "1024x1024" ] || fail "the adaptive icon is $size, not 1024x1024"
-  say "adaptive icon painted: $(basename "$icon") $size"
+  # The body must sit on the system's icon grid: 824 of 1024 px, centered, so
+  # x 100 to 923 on the middle row. IconRendering draws differently on macOS
+  # 26 (IconRenderer/main.swift), and 1.33.0 drew a 664 px body here. The unit
+  # test that pins the grid runs on macOS 27, so this is the check on macOS 26.
+  cat > "$ROOT/body.swift" <<'EOF'
+import AppKit
+let rep = NSBitmapImageRep(data: try! Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])))!
+let opaque = (0 ..< rep.pixelsWide).filter { (rep.colorAt(x: $0, y: rep.pixelsHigh / 2)?.alphaComponent ?? 0) > 0.98 }
+print(opaque.first ?? -1, opaque.last ?? -1)
+EOF
+  body="$(swift "$ROOT/body.swift" "$icon")"
+  case "$body" in
+    "100 923" | "99 924" | "101 922") ;;
+    *) fail "the adaptive icon's body spans x $body of 1024 on its middle row, not 100 923" ;;
+  esac
+  say "adaptive icon painted: $(basename "$icon") $size, body x $body"
 else
   sleep 5
   [ ! -d "$ICONS" ] || fail "macOS $VERSION: the app tried an adaptive icon, which needs macOS 26"
