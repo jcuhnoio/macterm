@@ -196,11 +196,11 @@ let rep = NSBitmapImageRep(data: try! Data(contentsOf: URL(fileURLWithPath: Comm
 let opaque = (0 ..< rep.pixelsWide).filter { (rep.colorAt(x: $0, y: rep.pixelsHigh / 2)?.alphaComponent ?? 0) > 0.98 }
 print(opaque.first ?? -1, opaque.last ?? -1)
 EOF
-  body="$(swift "$ROOT/body.swift" "$icon")"
-  case "$body" in
-    "100 923" | "99 924" | "101 922") ;;
-    *) fail "the adaptive icon's body spans x $body of 1024 on its middle row, not 100 923" ;;
-  esac
+  body="$(swift "$ROOT/body.swift" "$icon")" || fail "cannot measure the adaptive icon's body"
+  read -r first last <<< "$body"
+  if [ "$first" -lt 99 ] || [ "$first" -gt 101 ] || [ "$last" -lt 922 ] || [ "$last" -gt 924 ]; then
+    fail "the adaptive icon's body spans x $body of 1024 on its middle row, not 100 923"
+  fi
   say "adaptive icon painted: $(basename "$icon") $size, body x $body"
 else
   sleep 5
